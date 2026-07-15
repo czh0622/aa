@@ -251,6 +251,47 @@ docker exec -e PGPASSWORD='GU1chuideng@2025' -e LD_LIBRARY_PATH=/usr/local/openg
 docker exec monitordb bash -lc 'echo GAUSSHOME=$GAUSSHOME; ls /usr/local/opengauss/bin | head; find / -name gs_dump 2>/dev/null | head'
 ```
 
+### `could not open relation with OID` / `pg_stat_get_stream_replications`
+
+`gs_dump` 启动时会查询流复制状态；你当前实例该系统目录异常，导致 **gs_dump 无法使用**。请改用下面两种保底方案之一。
+
+**方案 A：gsql/COPY 逻辑备份（推荐日常，不停库）整行粘贴：**
+
+```bash
+TS=$(date +%Y%m%d_%H%M%S); mkdir -p ./backups/gsql_$TS; docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb /usr/local/opengauss/bin/gsql -p 5432 -d monitor -tAc "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1;" > ./backups/gsql_$TS/tables.list; while read -r t; do [ -z "$t" ] && continue; echo "dump $t"; docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb /usr/local/opengauss/bin/gsql -p 5432 -d monitor -c "COPY public.\"$t\" TO '/tmp/${t}_${TS}.copy' WITH (FORMAT text, ENCODING 'UTF8');"; docker cp monitordb:/tmp/${t}_${TS}.copy ./backups/gsql_$TS/${t}.copy; docker exec monitordb rm -f /tmp/${t}_${TS}.copy; done < ./backups/gsql_$TS/tables.list; echo OK: ./backups/gsql_$TS
+```
+
+还原单表示例（表结构需已存在）：
+
+```bash
+t=你的表名; FILE=./backups/gsql_时间戳/${t}.copy; docker cp "$FILE" monitordb:/tmp/${t}.copy; docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb /usr/local/opengauss/bin/gsql -p 5432 -d monitor -c "TRUNCATE public.\"$t\"; COPY public.\"$t\" FROM '/tmp/${t}.copy' WITH (FORMAT text, ENCODING 'UTF8');"
+```
+
+仓库脚本（DDL+数据打包）：`./scripts/backup-gsql.sh` / `./scripts/restore-gsql.sh`
+
+**方案 B：物理备份（最稳，会短暂停库）整行粘贴：**
+
+```bash
+TS=$(date +%Y%m%d_%H%M%S); mkdir -p ./backups; docker stop monitordb; docker cp monitordb:/var/lib/opengauss/data ./backups/pgdata_$TS; docker start monitordb; tar -czf ./backups/monitor_physical_$TS.tar.gz -C ./backups pgdata_$TS; rm -rf ./backups/pgdata_$TS; echo OK: ./backups/monitor_physical_$TS.tar.gz
+```
+
+物理还原（会覆盖数据，慎用）：
+
+```bash
+# 假设备份包已解出为 ./backups/pgdata_XXX
+docker stop monitordb; docker rm -f monitordb_restore_tmp 2>/dev/null; docker run -d --name monitordb_old_data enmotech/opengauss:6.0.0 sleep 3600 2>/dev/null || true
+# 更直接：停掉后替换容器数据目录（按你实际挂载方式调整）
+docker stop monitordb
+# 若数据在 named volume，需 docker volume 操作；若是 bind mount，直接覆盖宿主机目录后 docker start monitordb
+```
+
+可先确认系统目录问题：
+
+```bash
+docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb /usr/local/opengauss/bin/gsql -p 5432 -d monitor -c "select local_role from pg_catalog.pg_stat_get_stream_replications();"
+docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb /usr/local/opengauss/bin/gsql -p 5432 -d monitor -c "select oid,relname from pg_class where oid=3483;"
+```
+
 ### `Invalid username/password,login denied`
 
 `-h 127.0.0.1` 走 TCP，必须密码正确。创建的 `omm` 密码若与容器创建时 `GS_PASSWORD` 不一致就会失败。
