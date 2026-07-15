@@ -44,8 +44,9 @@ chmod +x scripts/*.sh
 
 | 脚本 | 作用 |
 |---|---|
-| `scripts/backup.sh` | 逻辑备份（`gs_dump`，默认 custom + `public`） |
-| `scripts/backup-gsql.sh` | **绕过 gs_dump**：gsql + COPY 逻辑备份 |
+| `scripts/backup-objects.sh` | **推荐**：序列+视图+函数（prosrc，避开 OID 3483） |
+| `scripts/restore-objects.sh` | 还原 `backup-objects.sh` 产物 |
+| `scripts/backup-gsql.sh` | 全量：表DDL/数据 + 上述对象 |
 | `scripts/backup-physical.sh` | **绕过 gs_dump**：停库拷贝数据目录 |
 | `scripts/restore.sh` | 从 `.dump` / `.sql` / `.sql.gz` / 目录备份还原 |
 | `scripts/restore-gsql.sh` | 还原 `backup-gsql.sh` 产物 |
