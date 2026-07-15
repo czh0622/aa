@@ -62,15 +62,21 @@ run_file() {
     echo "跳过 ${label}（无文件: $(basename "${host_file}")）"
     return 0
   fi
-  echo "---- 还原 ${label}: $(basename "${host_file}") -> db=${DB} ----"
+  local base remote
+  base="$(basename "${host_file}")"
+  remote="/home/omm/_restore_${base}.$$"
+  echo "---- 还原 ${label}: ${base} -> db=${DB} ----"
+  docker cp "${host_file}" "${CONTAINER}:${remote}"
+  docker exec -u 0 "${CONTAINER}" chown omm:omm "${remote}"
+  docker exec -u 0 "${CONTAINER}" chmod 644 "${remote}"
   set +e
-  # stdin 喂给 gsql，避免 docker cp 到 /tmp 后 omm Permission denied
-  docker exec -i -u omm \
+  docker exec -u omm \
     -e LD_LIBRARY_PATH="${GAUSSHOME}/lib" \
     "${CONTAINER}" \
-    "${GS_BIN}" -p 5432 -d "${DB}" -v ON_ERROR_STOP=0 -f - < "${host_file}"
+    "${GS_BIN}" -p 5432 -d "${DB}" -f "${remote}"
   local rc=$?
   set -e
+  docker exec -u 0 "${CONTAINER}" rm -f "${remote}" >/dev/null 2>&1 || true
   if [[ ${rc} -ne 0 ]]; then
     echo "WARN: ${label} 执行结束码=${rc}（请检查上方报错；常见为对象已存在可忽略）"
   else

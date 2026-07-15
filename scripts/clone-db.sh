@@ -41,11 +41,22 @@ run() {
     "${GS_BIN}" -p 5432 -d "${db}" "$@"
 }
 
-# 通过 stdin 执行 SQL 文件（解决 /tmp 权限 denied）
+# openGauss gsql 不支持 -f -（stdin）；docker cp 到 /home/omm 并 chown 给 omm
 run_file() {
   local db="$1" file="$2"
-  docker exec -i -u omm -e LD_LIBRARY_PATH="${GAUSSHOME}/lib" "${CONTAINER}" \
-    "${GS_BIN}" -p 5432 -d "${db}" -v ON_ERROR_STOP=0 -f - < "${file}"
+  local base remote
+  base="$(basename "${file}")"
+  remote="/home/omm/_apply_${base}.$$"
+  docker cp "${file}" "${CONTAINER}:${remote}"
+  docker exec -u 0 "${CONTAINER}" chown omm:omm "${remote}"
+  docker exec -u 0 "${CONTAINER}" chmod 644 "${remote}"
+  set +e
+  docker exec -u omm -e LD_LIBRARY_PATH="${GAUSSHOME}/lib" "${CONTAINER}" \
+    "${GS_BIN}" -p 5432 -d "${db}" -f "${remote}"
+  local rc=$?
+  set -e
+  docker exec -u 0 "${CONTAINER}" rm -f "${remote}" >/dev/null 2>&1 || true
+  return "${rc}"
 }
 
 # 仅用 pg_catalog 判断表是否存在
