@@ -1,351 +1,121 @@
 # OpenGauss (Docker) 备份与还原方案
 
-面向容器 `monitordb`（`enmotech/opengauss:6.0.0`，宿主机 `5435 -> 5432`）的可落地逻辑备份/还原方案。
+面向容器 `monitordb`（`enmotech/opengauss:6.0.0`，宿主机 `5435 -> 5432`）。
 
 | 项 | 值 |
 |---|---|
 | 容器名 | `monitordb` |
-| 数据库 | `monitor` |
+| 源库 | `monitor` |
+| 测试库 | `monitor_test` |
 | Schema | `public` |
-| 业务用户/密码 | `monitor` / `monitor_2012` |
-| 超管 omm 密码 | `GU1chuideng@2025` |
+| 业务用户 | `monitor` / `monitor_2012` |
+| 超管 | `omm` / `GU1chuideng@2025` |
 
-推荐使用 **omm** 做备份/还原（权限完整）。脚本默认已按此配置。
-
-> **重要：** `gs_dump` / `gsql` 只在 **Docker 容器内**，宿主机直接执行会报 `未找到命令`。  
-> 正确方式是 `docker exec monitordb ...`，或使用本仓库 `scripts/*.sh`（已自动进容器并注入 `GAUSSHOME`）。
+> **已知实例限制：** `gs_dump` / `pg_get_functiondef` / `CREATE FUNCTION` 可能触发 **OID 3483**。  
+> 表数据用 COPY；对象用 `backup-objects.sh`；函数能否迁入测试库取决于诊断结果。
 
 ---
 
-## 一、快速上手（三步）
+## 〇、当前推荐流程（克隆到 monitor_test）
 
 ```bash
-# 1. 准备配置
-cp config.env.example config.env
-# 按需编辑 config.env（密码、备份目录等）
+mkdir -p /tmp/og-clone && cd /tmp/og-clone
+curl -fsSL -o fetch-all.sh https://raw.githubusercontent.com/czh0622/aa/cursor/opengauss-backup-restore-9282/scripts/fetch-all.sh
+bash fetch-all.sh
 
-# 2. 备份
-chmod +x scripts/*.sh
-./scripts/backup.sh --cleanup
+# A. 诊断（必做）
+DB=monitor_test bash diagnose-oid3483.sh
 
-# 3. 还原（会覆盖同名对象，务必确认文件）
-./scripts/restore.sh --clean ./backups/monitor_public_YYYYMMDD_HHMMSS.dump
+# B. 整库克隆（建库+表结构+数据+对象）
+bash clone-db.sh --drop-dst
+
+# C. 若表已在、只需补对象
+bash finish-clone.sh
 ```
 
-连通性检查：
+| 能力 | 状态 |
+|---|---|
+| 表结构 + 表数据 | 可用（COPY / clone-db） |
+| 序列 | 可用 |
+| 函数迁入 monitor_test | 取决于 CREATE FUNCTION 是否触发 OID 3483 |
+| 依赖函数的视图 | 取决于函数先成功 |
+| `gs_dump` | 本实例不可用，勿用 |
 
-```bash
-./scripts/list-backups.sh --ping
-```
+若诊断显示 CREATE FUNCTION 报 OID 3483：表数据仍可用；函数留在源库 `monitor`；测试可连源库或目录修复后再跑 `install-functions.sh`。
 
 ---
 
-## 二、脚本说明
+## 一、脚本一览
 
 | 脚本 | 作用 |
 |---|---|
-| `scripts/backup-objects.sh` | **推荐**：序列+视图+函数（prosrc，避开 OID 3483） |
-| `scripts/restore-objects.sh` | 还原 `backup-objects.sh` 产物 |
-| `scripts/backup-gsql.sh` | 全量：表DDL/数据 + 上述对象 |
-| `scripts/backup-physical.sh` | **绕过 gs_dump**：停库拷贝数据目录 |
-| `scripts/restore.sh` | 从 `.dump` / `.sql` / `.sql.gz` / 目录备份还原 |
-| `scripts/restore-gsql.sh` | 还原 `backup-gsql.sh` 产物 |
-| `scripts/list-backups.sh` | 列出备份；`--ping` 探测库连通 |
-| `scripts/common.sh` | 公共配置加载与容器工具探测 |
-
-备份产物默认落在 `./backups/`，并附带 `.meta` 元数据文件。
-
----
-
-## 三、常用命令
-
-### 备份
-
-```bash
-# 默认：custom 格式，仅 public schema
-./scripts/backup.sh
-
-# 纯 SQL（便于人工查看；默认会 gzip）
-./scripts/backup.sh --format plain
-
-# 整库（不限 schema）
-./scripts/backup.sh --no-schema
-
-# 备份并清理 KEEP_DAYS 天前的旧文件
-./scripts/backup.sh --cleanup
-```
-
-### 还原
-
-```bash
-# 标准还原（custom）
-./scripts/restore.sh ./backups/monitor_public_20260715_080000.dump
-
-# 还原前清理已存在对象（推荐覆盖场景）
-./scripts/restore.sh --clean ./backups/monitor_public_20260715_080000.dump
-
-# 目标库不存在时自动创建
-./scripts/restore.sh --create-db --clean ./backups/monitor_public_20260715_080000.dump
-
-# 还原 SQL 文本备份
-./scripts/restore.sh ./backups/monitor_public_20260715_080000.sql.gz
-```
+| `fetch-all.sh` | 一键下载全部脚本 |
+| `diagnose-oid3483.sh` | 诊断 OID 3483 / CREATE FUNCTION |
+| `clone-db.sh` | monitor → monitor_test 整库克隆 |
+| `finish-clone.sh` | 表已存在时补齐对象 |
+| `backup-objects.sh` | 导出序列/视图/函数 |
+| `restore-objects.sh` | 还原对象（序列→函数→视图→setval） |
+| `install-functions.sh` | 逐个安装函数到目标库 |
+| `backup-physical.sh` | 停库物理备份整实例 |
+| `restore-table-data.sh` | 还原方案 A 的 `.copy` 数据 |
 
 ---
 
-## 四、不依赖脚本的 Docker 原生命令
-
-适合临时操作或排障。以下命令全部在**宿主机**执行，但通过 `docker exec` **进入容器**跑工具。
-
-> 错误示例（会报 `gs_dump：未找到命令`）：在宿主机直接  
-> `bash -lc "gs_dump ..."`  
-> 正确：必须带 `docker exec monitordb ...`，并用绝对路径或注入 `PATH`。
-
-### 先确认工具在容器里
+## 二、日常备份（表数据，不停库）
 
 ```bash
-docker ps --filter name=monitordb
-docker exec monitordb ls -l /usr/local/opengauss/bin/gs_dump
-docker exec monitordb /usr/local/opengauss/bin/gs_dump --help | head
+TS=$(date +%Y%m%d_%H%M%S); mkdir -p ./backups/gsql_$TS
+docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb \
+  /usr/local/opengauss/bin/gsql -p 5432 -d monitor -tAc \
+  "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r' ORDER BY 1;" \
+  > ./backups/gsql_$TS/tables.list
+while read -r t; do [ -z "$t" ] && continue; echo "dump $t"
+  docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb \
+    /usr/local/opengauss/bin/gsql -p 5432 -d monitor -c \
+    "COPY public.\"$t\" TO '/tmp/${t}_${TS}.copy' WITH (FORMAT text, ENCODING 'UTF8');"
+  docker cp monitordb:/tmp/${t}_${TS}.copy ./backups/gsql_$TS/${t}.copy
+  docker exec monitordb rm -f /tmp/${t}_${TS}.copy
+done < ./backups/gsql_$TS/tables.list
+echo OK: ./backups/gsql_$TS
 ```
 
-### 备份（custom，推荐）
-
-优先用**容器内本地 socket + Linux 用户 omm**（常可免密，避免 TCP 密码错误）：
-
-```bash
-TS=$(date +%Y%m%d_%H%M%S); mkdir -p ./backups; docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb /usr/local/opengauss/bin/gs_dump -p 5432 -U omm -n public -F c -f /tmp/monitor_${TS}.dump monitor && docker cp monitordb:/tmp/monitor_${TS}.dump ./backups/monitor_public_${TS}.dump && echo OK: ./backups/monitor_public_${TS}.dump
-```
-
-若必须走 TCP（`-h 127.0.0.1`），请确认密码正确。也可用业务用户：
-
-```bash
-TS=$(date +%Y%m%d_%H%M%S); mkdir -p ./backups; docker exec -e PGPASSWORD='monitor_2012' -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb /usr/local/opengauss/bin/gs_dump -h 127.0.0.1 -p 5432 -U monitor -n public -F c -f /tmp/monitor_${TS}.dump monitor && docker cp monitordb:/tmp/monitor_${TS}.dump ./backups/monitor_public_${TS}.dump && echo OK: ./backups/monitor_public_${TS}.dump
-```
-
-<details>
-<summary>完整多行写法（仅供阅读，粘贴请用上面单行）</summary>
-
-```bash
-TS=$(date +%Y%m%d_%H%M%S)
-mkdir -p ./backups
-
-docker exec -u omm \
-  -e LD_LIBRARY_PATH=/usr/local/opengauss/lib \
-  monitordb \
-  /usr/local/opengauss/bin/gs_dump \
-    -p 5432 -U omm -n public -F c \
-    -f /tmp/monitor_${TS}.dump \
-    monitor
-
-docker cp "monitordb:/tmp/monitor_${TS}.dump" "./backups/monitor_public_${TS}.dump"
-docker exec monitordb rm -f "/tmp/monitor_${TS}.dump"
-echo "OK: ./backups/monitor_public_${TS}.dump"
-```
-</details>
-
-### 备份（纯 SQL）
-
-```bash
-TS=$(date +%Y%m%d_%H%M%S)
-mkdir -p ./backups
-
-docker exec \
-  -e PGPASSWORD='GU1chuideng@2025' \
-  -e PATH=/usr/local/opengauss/bin:/usr/bin:/bin \
-  -e LD_LIBRARY_PATH=/usr/local/opengauss/lib \
-  monitordb \
-  /usr/local/opengauss/bin/gs_dump \
-    -h 127.0.0.1 -p 5432 -U omm -n public -F p \
-    -f /tmp/monitor_${TS}.sql \
-    monitor
-
-docker cp "monitordb:/tmp/monitor_${TS}.sql" "./backups/monitor_public_${TS}.sql"
-docker exec monitordb rm -f "/tmp/monitor_${TS}.sql"
-gzip -f "./backups/monitor_public_${TS}.sql"
-```
-
-### 还原（custom）
-
-```bash
-FILE=./backups/monitor_public_YYYYMMDD_HHMMSS.dump   # 改成真实文件名
-NAME=$(basename "$FILE")
-
-docker cp "$FILE" "monitordb:/tmp/${NAME}"
-docker exec \
-  -e PGPASSWORD='GU1chuideng@2025' \
-  -e PATH=/usr/local/opengauss/bin:/usr/bin:/bin \
-  -e LD_LIBRARY_PATH=/usr/local/opengauss/lib \
-  monitordb \
-  /usr/local/opengauss/bin/gs_restore \
-    -h 127.0.0.1 -p 5432 -U omm -d monitor -c /tmp/${NAME}
-docker exec monitordb rm -f "/tmp/${NAME}"
-```
-
-### 还原（SQL）
-
-```bash
-FILE=./backups/monitor_public_YYYYMMDD_HHMMSS.sql.gz
-
-gunzip -c "$FILE" | docker exec -i \
-  -e PGPASSWORD='GU1chuideng@2025' \
-  -e PATH=/usr/local/opengauss/bin:/usr/bin:/bin \
-  -e LD_LIBRARY_PATH=/usr/local/opengauss/lib \
-  monitordb \
-  /usr/local/opengauss/bin/gsql -h 127.0.0.1 -p 5432 -U omm -d monitor --no-password -f -
-```
+对象：`bash backup-objects.sh`
 
 ---
 
-## 五、定时备份（cron）
+## 三、还原到 monitor_test
 
 ```bash
-# 每天 02:30 备份并清理 7 天前文件
-# 把 /path/to/repo 换成实际路径
-crontab -e
+DB=monitor_test bash restore-objects.sh --create-db ./backups/objects_时间戳
+DB=monitor_test bash restore-table-data.sh ./backups/gsql_时间戳
+# 或
+bash clone-db.sh --drop-dst
 ```
 
-加入：
-
-```cron
-30 2 * * * cd /path/to/repo && ./scripts/backup.sh --cleanup >> /var/log/opengauss-backup.log 2>&1
-```
-
-也可参考 `scripts/crontab.example`。
+openGauss 禁止 `TEMPLATE monitor`，只能 `TEMPLATE template0`。
 
 ---
 
-## 六、操作建议与注意点
+## 四、OID 3483
 
-1. **还原前先再做一份备份**，避免误覆盖后无法回退。
-2. **优先 custom（`.dump`）**：体积小，支持 `--clean`，比 plain SQL 更适合例行恢复。
-3. 默认只备份 **`public` schema**；若库内还有其他 schema，用 `--no-schema` 做整库备份。
-4. 这是**逻辑备份**，不能替代物理备份/WAL 归档；适合中小库、迁移与日常容灾。
-5. `config.env` 含明文密码，已加入 `.gitignore`，不要提交到仓库。
-6. 还原报权限/`already exists` 时，优先用 omm + `--clean` 重试。
-7. 跨大版本还原（如 5.x → 6.x）可能不兼容，尽量同版本镜像还原。
+```bash
+DB=monitor_test bash diagnose-oid3483.sh
+SRC_DB=monitor DST_DB=monitor_test bash install-functions.sh
+```
+
+维护窗口可试（先备份）：`VACUUM FULL; REINDEX DATABASE monitor_test;`  
+整实例备份：`bash backup-physical.sh`
 
 ---
 
-## 七、故障排查
+## 五、注意
 
-### `gs_dump：未找到命令`
-
-几乎总是因为在**宿主机**直接执行了 `gs_dump`。工具在容器 `/usr/local/opengauss/bin/` 下。
-
-```bash
-# 1) 确认容器
-docker ps --filter name=monitordb
-
-# 2) 确认二进制（应能看到文件）
-docker exec monitordb ls -l /usr/local/opengauss/bin/gs_dump
-
-# 3) 用绝对路径备份（不要省略 docker exec）
-TS=$(date +%Y%m%d_%H%M%S)
-docker exec -e PGPASSWORD='GU1chuideng@2025' -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb \
-  /usr/local/opengauss/bin/gs_dump -h 127.0.0.1 -p 5432 -U omm -n public -F c -f /tmp/monitor_${TS}.dump monitor
-```
-
-> `gs_dump` **没有** `-d` 选项，库名写在命令**最后**（位置参数）。`gs_restore` / `gsql` 仍使用 `-d`。
-
-
-若第 2 步也没有该文件，再查安装前缀：
+1. 工具在容器内，路径 `/usr/local/opengauss/bin/`
+2. `gsql -f` 不支持 `-`；SQL 需 cp 到 `/home/omm` 并 chown omm
+3. 还原顺序：序列 → 函数 → 视图 → 序列值
+4. `config.env` 含密码勿提交
 
 ```bash
-docker exec monitordb bash -lc 'echo GAUSSHOME=$GAUSSHOME; ls /usr/local/opengauss/bin | head; find / -name gs_dump 2>/dev/null | head'
-```
-
-### `could not open relation with OID` / `pg_stat_get_stream_replications`
-
-`gs_dump` 启动时会查询流复制状态；你当前实例该系统目录异常，导致 **gs_dump 无法使用**。请改用下面两种保底方案之一。
-
-**方案 A：gsql/COPY 逻辑备份（推荐日常，不停库）**
-
-你已成功导出表数据后，请**再补导序列/视图/函数/过程**（整段保存为脚本执行，或用仓库 `scripts/export-objects-only.sh`）：
-
-```bash
-curl -fsSL -o /tmp/export-objects-only.sh https://raw.githubusercontent.com/czh0622/aa/cursor/opengauss-backup-restore-9282/scripts/export-objects-only.sh 2>/dev/null || true
-```
-
-若机器不能拉 GitHub，把仓库里的 `scripts/export-objects-only.sh` 拷到服务器后：
-
-```bash
-chmod +x export-objects-only.sh
-./export-objects-only.sh
-# 产物在 ./backups/objects_时间戳/
-```
-
-或直接在宿主机执行下面**对象补充导出**（不含表数据）：
-
-```bash
-bash -c 'CONTAINER=monitordb; DB=monitor; SCHEMA=public; GS=/usr/local/opengauss/bin/gsql; OUT=./backups/objects_$(date +%Y%m%d_%H%M%S); mkdir -p "$OUT"; run(){ docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib $CONTAINER $GS -p 5432 -d $DB "$@"; }; run -tAc "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='\''$SCHEMA'\'' AND c.relkind='\''S'\'' ORDER BY 1;" | sed "/^$/d" > "$OUT/sequences.list"; echo "SET search_path TO $SCHEMA, public;" > "$OUT/001_sequences.sql"; : > "$OUT/006_sequence_values.sql"; while read -r seq; do [ -z "$seq" ] && continue; echo "seq $seq"; META=$(run -tAc "SELECT increment_by||'\''|'\''||min_value||'\''|'\''||max_value||'\''|'\''||start_value||'\''|'\''||cache_value||'\''|'\''||CASE WHEN is_cycled THEN '\''CYCLE'\'' ELSE '\''NO CYCLE'\'' END||'\''|'\''||last_value||'\''|'\''||CASE WHEN is_called THEN '\''true'\'' ELSE '\''false'\'' END FROM $SCHEMA.\"$seq\";" | tr -d "\r"); IFS="|" read -r INC MINV MAXV START CACHE CYCLE LAST CALLED <<< "$META"; printf "CREATE SEQUENCE IF NOT EXISTS %s.\"%s\" INCREMENT BY %s MINVALUE %s MAXVALUE %s START WITH %s CACHE %s %s;\n" "$SCHEMA" "$seq" "$INC" "$MINV" "$MAXV" "$START" "$CACHE" "$CYCLE" >> "$OUT/001_sequences.sql"; echo "SELECT setval('\''$SCHEMA.\"$seq\"'\'', $LAST, $CALLED);" >> "$OUT/006_sequence_values.sql"; done < "$OUT/sequences.list"; run -tAc "SELECT viewname FROM pg_views WHERE schemaname='\''$SCHEMA'\'' ORDER BY 1;" | sed "/^$/d" > "$OUT/views.list"; echo "SET search_path TO $SCHEMA, public;" > "$OUT/003_views.sql"; while read -r v; do [ -z "$v" ] && continue; echo "view $v"; DEF=$(run -tAc "SELECT pg_get_viewdef('\''$SCHEMA.$v'\''::regclass, true);" | tr -d "\r"); [ -z "$DEF" ] && DEF=$(run -tAc "SELECT definition FROM pg_views WHERE schemaname='\''$SCHEMA'\'' AND viewname='\''$v'\'';" | tr -d "\r"); printf "CREATE OR REPLACE VIEW %s.\"%s\" AS\n%s;\n\n" "$SCHEMA" "$v" "$DEF" >> "$OUT/003_views.sql"; done < "$OUT/views.list"; echo "SET search_path TO $SCHEMA, public;" > "$OUT/004_routines.sql"; run -tAc "SELECT p.oid FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='\''$SCHEMA'\'' AND (NOT COALESCE(p.proisagg,false)) ORDER BY p.proname, p.oid;" | sed "/^$/d" > "$OUT/routines.oids"; while read -r oid; do [ -z "$oid" ] && continue; echo "routine $oid"; DEF=$(run -tAc "SELECT pg_get_functiondef($oid);" | tr -d "\r"); [ -n "$DEF" ] && { echo "$DEF;" >> "$OUT/004_routines.sql"; echo >> "$OUT/004_routines.sql"; }; done < "$OUT/routines.oids"; echo OK:$OUT; ls -l "$OUT"'
-```
-
-还原对象（按顺序，整行）：
-
-```bash
-OUT=./backups/objects_你的时间戳; for f in 001_sequences.sql 003_views.sql 004_routines.sql 006_sequence_values.sql; do docker cp "$OUT/$f" monitordb:/tmp/$f; docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb /usr/local/opengauss/bin/gsql -p 5432 -d monitor -f /tmp/$f; done; echo DONE
-```
-
-完整（表数据+全部对象）请用仓库脚本：`./scripts/backup-gsql.sh`（默认全量）或 `./scripts/backup-gsql.sh --objects-only`。
-
-**方案 B：物理备份（最稳，会短暂停库）整行粘贴：**
-
-```bash
-TS=$(date +%Y%m%d_%H%M%S); mkdir -p ./backups; docker stop monitordb; docker cp monitordb:/var/lib/opengauss/data ./backups/pgdata_$TS; docker start monitordb; tar -czf ./backups/monitor_physical_$TS.tar.gz -C ./backups pgdata_$TS; rm -rf ./backups/pgdata_$TS; echo OK: ./backups/monitor_physical_$TS.tar.gz
-```
-
-物理还原（会覆盖数据，慎用）：
-
-```bash
-# 假设备份包已解出为 ./backups/pgdata_XXX
-docker stop monitordb; docker rm -f monitordb_restore_tmp 2>/dev/null; docker run -d --name monitordb_old_data enmotech/opengauss:6.0.0 sleep 3600 2>/dev/null || true
-# 更直接：停掉后替换容器数据目录（按你实际挂载方式调整）
-docker stop monitordb
-# 若数据在 named volume，需 docker volume 操作；若是 bind mount，直接覆盖宿主机目录后 docker start monitordb
-```
-
-可先确认系统目录问题：
-
-```bash
-docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb /usr/local/opengauss/bin/gsql -p 5432 -d monitor -c "select local_role from pg_catalog.pg_stat_get_stream_replications();"
-docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb /usr/local/opengauss/bin/gsql -p 5432 -d monitor -c "select oid,relname from pg_class where oid=3483;"
-```
-
-### `Invalid username/password,login denied`
-
-`-h 127.0.0.1` 走 TCP，必须密码正确。创建的 `omm` 密码若与容器创建时 `GS_PASSWORD` 不一致就会失败。
-
-**优先改用本地 socket（推荐，常免密）：**
-
-```bash
-TS=$(date +%Y%m%d_%H%M%S); mkdir -p ./backups; docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb /usr/local/opengauss/bin/gs_dump -p 5432 -U omm -n public -F c -f /tmp/monitor_${TS}.dump monitor && docker cp monitordb:/tmp/monitor_${TS}.dump ./backups/monitor_public_${TS}.dump && echo OK: ./backups/monitor_public_${TS}.dump
-```
-
-**排查密码：**
-
-```bash
-# 看容器创建时的环境变量（GS_PASSWORD 才是 omm 初始密码）
-docker inspect monitordb --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E 'GS_PASSWORD|PASSWORD' || true
-
-# 测业务用户（你提供的 monitor / monitor_2012）
-docker exec -e PGPASSWORD='monitor_2012' -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb \
-  /usr/local/opengauss/bin/gsql -h 127.0.0.1 -p 5432 -U monitor -d monitor -c 'SELECT current_user;'
-
-# 测 omm + 你以为的密码
-docker exec -e PGPASSWORD='GU1chuideng@2025' -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb \
-  /usr/local/opengauss/bin/gsql -h 127.0.0.1 -p 5432 -U omm -d monitor -c 'SELECT current_user;'
-```
-
-若本地 socket 成功、TCP 失败：说明只是 TCP 密码不对，备份请继续用无 `-h` 的写法。
-
-### 其他检查
-
-```bash
-# 本地 socket 登录测试（推荐）
-docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib -it monitordb \
+docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb \
   /usr/local/opengauss/bin/gsql -p 5432 -d monitor -c 'SELECT version();'
-
-# 看最近备份
-./scripts/list-backups.sh
 ```
