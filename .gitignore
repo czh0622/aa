@@ -1,0 +1,8 @@
+# 备份产物与本地配置（含密码）勿入库
+config.env
+backups/
+*.dump
+*.sql
+*.sql.gz
+*.meta
+.DS_Store
