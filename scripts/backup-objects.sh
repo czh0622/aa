@@ -104,7 +104,7 @@ done < "${OUT}/views.list"
 # 生成两份：004_routines.sql（完整）与 004_routines_simple.sql（类型名简化，兼容性更好）
 echo "SET search_path TO public;" > "${OUT}/004_routines.sql"
 echo "-- built from pg_proc.prosrc (avoid pg_get_functiondef / OID 3483)" >> "${OUT}/004_routines.sql"
-cp "${OUT}/004_routines.sql" "${OUT}/004_routines_simple.sql"
+mkdir -p "${OUT}/routines.d"
 
 # 类型名简化：去掉 pg_catalog 前缀，常用别名归一
 simp_type() {
@@ -200,7 +200,23 @@ while read -r oid; do
     echo
     echo "\$function\$ LANGUAGE ${LANG};"
     echo
-  } | tee -a "${OUT}/004_routines.sql" >> "${OUT}/004_routines_simple.sql"
+  } >> "${OUT}/004_routines.sql"
+
+  {
+    echo "-- OID ${oid} ${NAME} (per-function file also in routines.d/)"
+    echo "DROP FUNCTION IF EXISTS ${SCHEMA}.${NAME}(${ARG_TYPES_ONLY});"
+    echo "CREATE FUNCTION ${SCHEMA}.${NAME}(${ARG_SQL})"
+    if [[ "${RETSET}" == "t" ]]; then
+      echo "RETURNS SETOF ${RET}"
+    else
+      echo "RETURNS ${RET}"
+    fi
+    echo "AS \$function\$"
+    cat "${BODY_FILE}"
+    echo
+    echo "\$function\$ LANGUAGE ${LANG};"
+    echo
+  } > "${OUT}/routines.d/${oid}_${NAME}.sql"
 
   rm -f "${BODY_FILE}"
   ROUT_OK=$((ROUT_OK + 1))

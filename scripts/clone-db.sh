@@ -247,6 +247,9 @@ if [[ "${MODE}" != "structure-only" ]]; then
       bash "${SCRIPT_DIR}/backup-objects.sh"
     CONTAINER="${CONTAINER}" DB="${DST_DB}" \
       bash "${SCRIPT_DIR}/restore-objects.sh" "${OUT}"
+    echo "若函数/视图未成功，可单独执行:"
+    echo "  SRC_DB=${SRC_DB} DST_DB=${DST_DB} bash ${SCRIPT_DIR}/install-functions.sh"
+    echo "  DB=${DST_DB} bash ${SCRIPT_DIR}/restore-objects.sh ${OUT}"
   else
     echo "WARN: 未找到 backup-objects.sh，请手动还原对象"
   fi

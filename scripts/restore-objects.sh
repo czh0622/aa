@@ -71,6 +71,7 @@ run_file() {
   else
     echo "OK: ${label}"
   fi
+  return "${rc}"
 }
 
 echo "==== 还原对象: container=${CONTAINER} db=${DB} src=${SRC} ===="
@@ -100,14 +101,25 @@ fi
 # 正确顺序：序列 -> 函数 -> 视图 -> 序列值
 run_file "${SRC}/001_sequences.sql" "序列定义"
 if [[ "${SKIP_FUNCS}" != "true" ]]; then
-  # 优先用简化版（若存在）
-  if [[ -f "${SRC}/004_routines_simple.sql" ]]; then
-    run_file "${SRC}/004_routines_simple.sql" "函数/过程(simple)"
-  else
+  if [[ -d "${SRC}/routines.d" ]] && compgen -G "${SRC}/routines.d/*.sql" > /dev/null; then
+    echo "---- 逐个安装函数 ----"
+    FN_OK=0
+    FN_FAIL=0
+    for f in "${SRC}"/routines.d/*.sql; do
+      [[ -f "${f}" ]] || continue
+      echo "函数文件: $(basename "${f}")"
+      set +e
+      run_file "${f}" "函数-$(basename "${f}")"
+      rc=$?
+      set -e
+      if [[ ${rc} -eq 0 ]]; then FN_OK=$((FN_OK+1)); else FN_FAIL=$((FN_FAIL+1)); fi
+    done
+    echo "函数逐个安装: 成功=${FN_OK} 失败=${FN_FAIL}"
+  elif [[ -f "${SRC}/004_routines.sql" ]]; then
     run_file "${SRC}/004_routines.sql" "函数/过程"
   fi
 else
-  echo "跳过函数还原（CREATE FUNCTION 不可用）"
+  echo "跳过函数还原（CREATE FUNCTION 不可用，可运行: bash diagnose-oid3483.sh）"
 fi
 run_file "${SRC}/003_views.sql" "视图"
 run_file "${SRC}/006_sequence_values.sql" "序列当前值"
