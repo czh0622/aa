@@ -100,13 +100,14 @@ log "开始备份: container=${CONTAINER_NAME} db=${DB_NAME} user=${DB_USER} for
 # 在容器内创建临时目录并执行 dump
 docker_db_exec bash -lc "mkdir -p '${CONTAINER_TMP}'"
 
-# 注意: openGauss 的 gs_dump 不支持 -d，库名必须作为末尾位置参数
-# pg_dump 同样支持位置参数，因此统一写在最后
+# 默认不传 -h，走容器内 Unix socket（以 omm 用户执行时常可免密）
+CONN_ARGS=()
+while IFS= read -r _line; do
+  [[ -n "${_line}" ]] && CONN_ARGS+=("${_line}")
+done < <(db_conn_args)
 DUMP_CMD=(
   "${DUMP_BIN}"
-  -h 127.0.0.1
-  -p "${DB_PORT}"
-  -U "${DB_USER}"
+  "${CONN_ARGS[@]}"
   --no-password
 )
 if [[ ${#SCHEMA_ARGS[@]} -gt 0 ]]; then

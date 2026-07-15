@@ -106,54 +106,45 @@ FORMAT="$(detect_format "${BACKUP_PATH}")"
 log "准备还原: file=${BACKUP_PATH} format=${FORMAT} target_db=${TARGET_DB}"
 log "警告: 还原可能覆盖现有数据，请确认已做好二次备份"
 
+CONN_ARGS=()
+while IFS= read -r _line; do
+  [[ -n "${_line}" ]] && CONN_ARGS+=("${_line}")
+done < <(db_conn_args)
+
 # 可选：创建数据库
 db_exists() {
-  docker_db_exec bash -lc "
-    ${SQL_BIN} -h 127.0.0.1 -p ${DB_PORT} -U '${DB_USER}' -d postgres -tAc \
-      \"SELECT 1 FROM pg_database WHERE datname='${TARGET_DB}'\" 2>/dev/null | tr -d '[:space:]'
-  "
+  docker_db_exec "${SQL_BIN}" "${CONN_ARGS[@]}" -d postgres -tAc \
+    "SELECT 1 FROM pg_database WHERE datname='${TARGET_DB}'" 2>/dev/null | tr -d '[:space:]' || true
 }
 
-if [[ "$(db_exists || true)" != "1" ]]; then
+if [[ "$(db_exists)" != "1" ]]; then
   if [[ "${CREATE_DB}" == "true" ]]; then
     log "目标库 ${TARGET_DB} 不存在，正在创建..."
-    docker_db_exec bash -lc "
-      ${SQL_BIN} -h 127.0.0.1 -p ${DB_PORT} -U '${DB_USER}' -d postgres --no-password \
-        -c \"CREATE DATABASE ${TARGET_DB} ENCODING 'UTF8';\"
-    "
+    docker_db_exec "${SQL_BIN}" "${CONN_ARGS[@]}" -d postgres --no-password \
+      -c "CREATE DATABASE ${TARGET_DB} ENCODING 'UTF8';"
   else
     die "目标库 ${TARGET_DB} 不存在。可加 --create-db 自动创建"
   fi
 fi
 
 # 上传备份到容器
-docker_db_exec bash -lc "mkdir -p '${CONTAINER_TMP}'"
+docker_db_exec mkdir -p "${CONTAINER_TMP}"
 if [[ "${FORMAT}" == "directory" ]]; then
   docker cp "${BACKUP_PATH}" "${CONTAINER_NAME}:${CONTAINER_FILE}"
 else
-  # .sql.gz 需要在容器内解压
   docker cp "${BACKUP_PATH}" "${CONTAINER_NAME}:${CONTAINER_FILE}"
 fi
 
 cleanup_container() {
-  docker_db_exec bash -lc "rm -rf '${CONTAINER_TMP}'" >/dev/null 2>&1 || true
+  docker_db_exec rm -rf "${CONTAINER_TMP}" >/dev/null 2>&1 || true
 }
 trap cleanup_container EXIT
 
 restore_custom_or_dir() {
-  local clean_args=()
-  [[ "${DO_CLEAN}" == "true" ]] && clean_args+=(-c)
-
-  docker_db_exec bash -lc "
-    ${RESTORE_BIN} \
-      -h 127.0.0.1 \
-      -p ${DB_PORT} \
-      -U '${DB_USER}' \
-      -d '${TARGET_DB}' \
-      --no-password \
-      ${clean_args[*]+"${clean_args[@]}"} \
-      '${CONTAINER_FILE}'
-  "
+  local -a cmd=("${RESTORE_BIN}" "${CONN_ARGS[@]}" -d "${TARGET_DB}" --no-password)
+  [[ "${DO_CLEAN}" == "true" ]] && cmd+=(-c)
+  cmd+=("${CONTAINER_FILE}")
+  docker_db_exec "${cmd[@]}"
 }
 
 restore_plain() {
@@ -163,16 +154,11 @@ restore_plain() {
     docker_db_exec bash -lc "gunzip -c '${CONTAINER_FILE}' > '${sql_file}'"
   fi
 
-  # plain SQL：若要求 clean，先尝试 truncate/drop schema 中对象风险高，
-  # 这里仅提示；推荐用 custom 格式 + --clean
   if [[ "${DO_CLEAN}" == "true" ]]; then
     log "plain 格式不自动执行 --clean（避免误删）。如需干净还原，建议先备份后手动 DROP SCHEMA 或改用 custom 备份。"
   fi
 
-  docker_db_exec bash -lc "
-    ${SQL_BIN} -h 127.0.0.1 -p ${DB_PORT} -U '${DB_USER}' -d '${TARGET_DB}' --no-password \
-      -f '${sql_file}'
-  "
+  docker_db_exec "${SQL_BIN}" "${CONN_ARGS[@]}" -d "${TARGET_DB}" --no-password -f "${sql_file}"
 }
 
 set +e
@@ -197,11 +183,9 @@ fi
 
 # 简单校验：连接并统计 public schema 表数量
 TABLE_COUNT="$(
-  docker_db_exec bash -lc "
-    ${SQL_BIN} -h 127.0.0.1 -p ${DB_PORT} -U '${DB_USER}' -d '${TARGET_DB}' -tAc \
-      \"SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE';\" \
-      2>/dev/null | tr -d '[:space:]'
-  " || echo "?"
+  docker_db_exec "${SQL_BIN}" "${CONN_ARGS[@]}" -d "${TARGET_DB}" -tAc \
+    "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE';" \
+    2>/dev/null | tr -d '[:space:]' || echo "?"
 )"
 
 log "还原完成: db=${TARGET_DB} public 表数量=${TABLE_COUNT}"

@@ -27,9 +27,11 @@ load_config() {
 
   CONTAINER_NAME="${CONTAINER_NAME:-monitordb}"
   DB_PORT="${DB_PORT:-5432}"
+  DB_HOST="${DB_HOST-}"
   DB_NAME="${DB_NAME:-monitor}"
   DB_USER="${DB_USER:-omm}"
   DB_PASSWORD="${DB_PASSWORD:-}"
+  DOCKER_USER="${DOCKER_USER:-omm}"
   BACKUP_DIR="${BACKUP_DIR:-${ROOT_DIR}/backups}"
   KEEP_DAYS="${KEEP_DAYS:-7}"
   BACKUP_FORMAT="${BACKUP_FORMAT:-custom}"
@@ -37,7 +39,10 @@ load_config() {
   COMPRESS_PLAIN="${COMPRESS_PLAIN:-true}"
   GAUSSHOME="${GAUSSHOME:-${DEFAULT_GAUSSHOME}}"
 
-  [[ -n "${DB_PASSWORD}" ]] || die "DB_PASSWORD 未配置"
+  # 本地 socket + omm 时密码可为空；TCP 连接则必须有密码
+  if [[ -n "${DB_HOST}" && -z "${DB_PASSWORD}" ]]; then
+    die "DB_HOST=${DB_HOST} 时需要配置 DB_PASSWORD"
+  fi
 }
 
 require_docker() {
@@ -53,14 +58,28 @@ require_container() {
 
 # 在容器内执行命令；注入密码与 openGauss 环境（PATH 对非交互 shell 常未加载）
 docker_db_exec() {
-  docker exec \
-    -e PGPASSWORD="${DB_PASSWORD}" \
-    -e GS_PASSWORD="${DB_PASSWORD}" \
-    -e GAUSSHOME="${GAUSSHOME}" \
-    -e PATH="${GAUSSHOME}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-    -e LD_LIBRARY_PATH="${GAUSSHOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
-    "${CONTAINER_NAME}" \
-    "$@"
+  local -a exec_args=(exec)
+  if [[ -n "${DOCKER_USER}" ]]; then
+    exec_args+=(-u "${DOCKER_USER}")
+  fi
+  exec_args+=(
+    -e "PGPASSWORD=${DB_PASSWORD}"
+    -e "GS_PASSWORD=${DB_PASSWORD}"
+    -e "GAUSSHOME=${GAUSSHOME}"
+    -e "PATH=${GAUSSHOME}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    -e "LD_LIBRARY_PATH=${GAUSSHOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+    "${CONTAINER_NAME}"
+  )
+  docker "${exec_args[@]}" "$@"
+}
+
+# 组装客户端连接参数（空 DB_HOST = Unix socket，避免错误密码导致 TCP 认证失败）
+db_conn_args() {
+  local -a args=(-p "${DB_PORT}" -U "${DB_USER}")
+  if [[ -n "${DB_HOST}" ]]; then
+    args+=(-h "${DB_HOST}")
+  fi
+  printf '%s\n' "${args[@]}"
 }
 
 # 在容器内解析可执行文件绝对路径

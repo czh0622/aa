@@ -107,18 +107,30 @@ docker exec monitordb /usr/local/opengauss/bin/gs_dump --help | head
 
 ### 备份（custom，推荐）
 
+优先用**容器内本地 socket + Linux 用户 omm**（常可免密，避免 TCP 密码错误）：
+
+```bash
+TS=$(date +%Y%m%d_%H%M%S); mkdir -p ./backups; docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb /usr/local/opengauss/bin/gs_dump -p 5432 -U omm -n public -F c -f /tmp/monitor_${TS}.dump monitor && docker cp monitordb:/tmp/monitor_${TS}.dump ./backups/monitor_public_${TS}.dump && echo OK: ./backups/monitor_public_${TS}.dump
+```
+
+若必须走 TCP（`-h 127.0.0.1`），请确认密码正确。也可用业务用户：
+
+```bash
+TS=$(date +%Y%m%d_%H%M%S); mkdir -p ./backups; docker exec -e PGPASSWORD='monitor_2012' -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb /usr/local/opengauss/bin/gs_dump -h 127.0.0.1 -p 5432 -U monitor -n public -F c -f /tmp/monitor_${TS}.dump monitor && docker cp monitordb:/tmp/monitor_${TS}.dump ./backups/monitor_public_${TS}.dump && echo OK: ./backups/monitor_public_${TS}.dump
+```
+
+<details>
+<summary>完整多行写法（仅供阅读，粘贴请用上面单行）</summary>
+
 ```bash
 TS=$(date +%Y%m%d_%H%M%S)
 mkdir -p ./backups
 
-docker exec \
-  -e PGPASSWORD='GU1chuideng@2025' \
-  -e GAUSSHOME=/usr/local/opengauss \
-  -e PATH=/usr/local/opengauss/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+docker exec -u omm \
   -e LD_LIBRARY_PATH=/usr/local/opengauss/lib \
   monitordb \
   /usr/local/opengauss/bin/gs_dump \
-    -h 127.0.0.1 -p 5432 -U omm -n public -F c \
+    -p 5432 -U omm -n public -F c \
     -f /tmp/monitor_${TS}.dump \
     monitor
 
@@ -126,6 +138,7 @@ docker cp "monitordb:/tmp/monitor_${TS}.dump" "./backups/monitor_public_${TS}.du
 docker exec monitordb rm -f "/tmp/monitor_${TS}.dump"
 echo "OK: ./backups/monitor_public_${TS}.dump"
 ```
+</details>
 
 ### 备份（纯 SQL）
 
@@ -238,15 +251,40 @@ docker exec -e PGPASSWORD='GU1chuideng@2025' -e LD_LIBRARY_PATH=/usr/local/openg
 docker exec monitordb bash -lc 'echo GAUSSHOME=$GAUSSHOME; ls /usr/local/opengauss/bin | head; find / -name gs_dump 2>/dev/null | head'
 ```
 
+### `Invalid username/password,login denied`
+
+`-h 127.0.0.1` 走 TCP，必须密码正确。创建的 `omm` 密码若与容器创建时 `GS_PASSWORD` 不一致就会失败。
+
+**优先改用本地 socket（推荐，常免密）：**
+
+```bash
+TS=$(date +%Y%m%d_%H%M%S); mkdir -p ./backups; docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb /usr/local/opengauss/bin/gs_dump -p 5432 -U omm -n public -F c -f /tmp/monitor_${TS}.dump monitor && docker cp monitordb:/tmp/monitor_${TS}.dump ./backups/monitor_public_${TS}.dump && echo OK: ./backups/monitor_public_${TS}.dump
+```
+
+**排查密码：**
+
+```bash
+# 看容器创建时的环境变量（GS_PASSWORD 才是 omm 初始密码）
+docker inspect monitordb --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E 'GS_PASSWORD|PASSWORD' || true
+
+# 测业务用户（你提供的 monitor / monitor_2012）
+docker exec -e PGPASSWORD='monitor_2012' -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb \
+  /usr/local/opengauss/bin/gsql -h 127.0.0.1 -p 5432 -U monitor -d monitor -c 'SELECT current_user;'
+
+# 测 omm + 你以为的密码
+docker exec -e PGPASSWORD='GU1chuideng@2025' -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb \
+  /usr/local/opengauss/bin/gsql -h 127.0.0.1 -p 5432 -U omm -d monitor -c 'SELECT current_user;'
+```
+
+若本地 socket 成功、TCP 失败：说明只是 TCP 密码不对，备份请继续用无 `-h` 的写法。
+
 ### 其他检查
 
 ```bash
-# 用绝对路径登录测试
-docker exec -e PGPASSWORD='GU1chuideng@2025' -e LD_LIBRARY_PATH=/usr/local/opengauss/lib -it monitordb \
-  /usr/local/opengauss/bin/gsql -h 127.0.0.1 -p 5432 -U omm -d monitor
+# 本地 socket 登录测试（推荐）
+docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib -it monitordb \
+  /usr/local/opengauss/bin/gsql -p 5432 -d monitor -c 'SELECT version();'
 
 # 看最近备份
 ./scripts/list-backups.sh
 ```
-
-若报认证失败：核对密码；确认使用 `omm`（业务用户可能缺 dump 权限）。

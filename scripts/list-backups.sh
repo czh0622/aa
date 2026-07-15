@@ -29,8 +29,10 @@ if [[ "${DO_PING}" == "true" ]]; then
   require_container
   detect_tools
   log "探测数据库连通性..."
-  docker_db_exec bash -lc "
-    ${SQL_BIN} -h 127.0.0.1 -p ${DB_PORT} -U '${DB_USER}' -d '${DB_NAME}' --no-password \
-      -c 'SELECT version(); SELECT current_database(), current_user;'
-  "
+  CONN_ARGS=()
+  while IFS= read -r _line; do
+    [[ -n "${_line}" ]] && CONN_ARGS+=("${_line}")
+  done < <(db_conn_args)
+  docker_db_exec "${SQL_BIN}" "${CONN_ARGS[@]}" -d "${DB_NAME}" --no-password \
+    -c 'SELECT version(); SELECT current_database(), current_user;'
 fi
