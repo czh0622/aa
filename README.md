@@ -118,8 +118,9 @@ docker exec \
   -e LD_LIBRARY_PATH=/usr/local/opengauss/lib \
   monitordb \
   /usr/local/opengauss/bin/gs_dump \
-    -h 127.0.0.1 -p 5432 -U omm -d monitor -n public -F c \
-    -f /tmp/monitor_${TS}.dump
+    -h 127.0.0.1 -p 5432 -U omm -n public -F c \
+    -f /tmp/monitor_${TS}.dump \
+    monitor
 
 docker cp "monitordb:/tmp/monitor_${TS}.dump" "./backups/monitor_public_${TS}.dump"
 docker exec monitordb rm -f "/tmp/monitor_${TS}.dump"
@@ -138,8 +139,9 @@ docker exec \
   -e LD_LIBRARY_PATH=/usr/local/opengauss/lib \
   monitordb \
   /usr/local/opengauss/bin/gs_dump \
-    -h 127.0.0.1 -p 5432 -U omm -d monitor -n public -F p \
-    -f /tmp/monitor_${TS}.sql
+    -h 127.0.0.1 -p 5432 -U omm -n public -F p \
+    -f /tmp/monitor_${TS}.sql \
+    monitor
 
 docker cp "monitordb:/tmp/monitor_${TS}.sql" "./backups/monitor_public_${TS}.sql"
 docker exec monitordb rm -f "/tmp/monitor_${TS}.sql"
@@ -224,8 +226,11 @@ docker exec monitordb ls -l /usr/local/opengauss/bin/gs_dump
 # 3) 用绝对路径备份（不要省略 docker exec）
 TS=$(date +%Y%m%d_%H%M%S)
 docker exec -e PGPASSWORD='GU1chuideng@2025' -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb \
-  /usr/local/opengauss/bin/gs_dump -h 127.0.0.1 -p 5432 -U omm -d monitor -n public -F c -f /tmp/monitor_${TS}.dump
+  /usr/local/opengauss/bin/gs_dump -h 127.0.0.1 -p 5432 -U omm -n public -F c -f /tmp/monitor_${TS}.dump monitor
 ```
+
+> `gs_dump` **没有** `-d` 选项，库名写在命令**最后**（位置参数）。`gs_restore` / `gsql` 仍使用 `-d`。
+
 
 若第 2 步也没有该文件，再查安装前缀：
 
