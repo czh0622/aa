@@ -53,45 +53,45 @@ run_file() {
     echo "跳过 ${label}（无文件: $(basename "${host_file}")）"
     return 0
   fi
-  local base remote
+  local base remote logf
   base="$(basename "${host_file}")"
   remote="/home/omm/_restore_${base}.$$"
+  logf="/tmp/_restore_${base}.$$.log"
   echo "---- 还原 ${label}: ${base} -> db=${DB} ----"
   docker cp "${host_file}" "${CONTAINER}:${remote}"
   docker exec -u 0 "${CONTAINER}" chown omm:omm "${remote}"
   docker exec -u 0 "${CONTAINER}" chmod 644 "${remote}"
   set +e
   docker exec -u omm -e LD_LIBRARY_PATH="${GAUSSHOME}/lib" "${CONTAINER}" \
-    "${GS_BIN}" -p 5432 -d "${DB}" -f "${remote}"
-  local rc=$?
+    "${GS_BIN}" -p 5432 -d "${DB}" -f "${remote}" 2>&1 | tee "${logf}"
+  local rc=${PIPESTATUS[0]}
   set -e
   docker exec -u 0 "${CONTAINER}" rm -f "${remote}" >/dev/null 2>&1 || true
-  if [[ ${rc} -ne 0 ]]; then
-    echo "WARN: ${label} 执行结束码=${rc}"
-  else
-    echo "OK: ${label}"
+  if [[ ${rc} -ne 0 ]] || grep -qiE 'ERROR:|OID 3483' "${logf}" 2>/dev/null; then
+    echo "FAIL: ${label}（退出码=${rc}，日志含 ERROR）"
+    grep -iE 'ERROR:|OID 3483' "${logf}" 2>/dev/null | head -5 || true
+    rm -f "${logf}"
+    return 1
   fi
-  return "${rc}"
+  rm -f "${logf}"
+  echo "OK: ${label}"
+  return 0
 }
 
 echo "==== 还原对象: container=${CONTAINER} db=${DB} src=${SRC} ===="
 
-# 探测：本实例能否 CREATE FUNCTION（OID 3483 常导致失败）
-echo "---- 探测 CREATE FUNCTION ----"
+# 探测：必须用 plpgsql（与真实函数同语言；sql 探测会误报可用）
+echo "---- 探测 CREATE FUNCTION (plpgsql) ----"
 set +e
-PROBE_OUT="$(run_sql -d "${DB}" -c "CREATE OR REPLACE FUNCTION public.__probe_fn_restore() RETURNS integer LANGUAGE sql AS 'SELECT 1';" 2>&1)"
+PROBE_OUT="$(run_sql -d "${DB}" -c "CREATE OR REPLACE FUNCTION public.__probe_fn_restore() RETURNS integer LANGUAGE plpgsql AS \$\$ BEGIN RETURN 1; END; \$\$;" 2>&1)"
 PROBE_RC=$?
 set -e
 echo "${PROBE_OUT}"
-if echo "${PROBE_OUT}" | grep -q "OID 3483"; then
+if echo "${PROBE_OUT}" | grep -qiE 'OID 3483|ERROR'; then
   echo
-  echo "ERROR: 当前实例 CREATE FUNCTION 会触发 OID 3483，函数无法在 ${DB} 中创建。"
-  echo "这是 openGauss 系统目录异常（与 gs_dump 失败同源），不是脚本语法问题。"
-  echo "建议先在库内执行诊断："
-  echo "  SELECT oid,relname,relkind FROM pg_class WHERE oid=3483;"
-  echo "  SELECT oid,relname FROM pg_class WHERE oid BETWEEN 3470 AND 3490 ORDER BY 1;"
-  echo "在目录修复前：表数据/序列仍可用；依赖函数的视图会失败。"
-  echo "将跳过函数还原，仍尝试还原序列与不依赖函数的视图。"
+  echo "ERROR: ${DB} 无法 CREATE plpgsql 函数（OID 3483）。"
+  echo "restore-objects / install-functions 均无法把函数装入 ${DB}。"
+  echo "替代: bash verify-functions.sh  或  bash clone-db-fs.sh --drop-dst"
   SKIP_FUNCS=true
 else
   SKIP_FUNCS=false

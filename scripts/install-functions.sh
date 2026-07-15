@@ -58,15 +58,15 @@ mkdir -p "${WORK}"
 
 echo "==== 安装函数 ${SRC_DB} -> ${DST_DB} ===="
 
-# 探测目标库能否 CREATE FUNCTION
+# 探测目标库能否 CREATE plpgsql 函数（与真实函数同语言）
 set +e
-PROBE="$(run_dst -c "CREATE OR REPLACE FUNCTION public.__fn_probe() RETURNS int LANGUAGE sql AS 'SELECT 1';" 2>&1)"
+PROBE="$(run_dst -c "CREATE OR REPLACE FUNCTION public.__fn_probe() RETURNS int LANGUAGE plpgsql AS \$\$ BEGIN RETURN 1; END; \$\$;" 2>&1)"
 set -e
-if echo "${PROBE}" | grep -q "OID 3483"; then
-  echo "ERROR: ${DST_DB} 无法 CREATE FUNCTION（OID 3483）"
+if echo "${PROBE}" | grep -qiE 'OID 3483|ERROR'; then
+  echo "ERROR: ${DST_DB} 无法 CREATE plpgsql 函数"
   echo "${PROBE}"
-  echo "请先运行: bash diagnose-oid3483.sh"
-  echo "在目录修复前，函数无法装入 ${DST_DB}。"
+  echo "请运行: bash verify-functions.sh"
+  echo "或文件系统克隆: bash clone-db-fs.sh --drop-dst"
   exit 2
 fi
 run_dst -c "DROP FUNCTION IF EXISTS public.__fn_probe();" >/dev/null 2>&1 || true

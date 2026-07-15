@@ -5,8 +5,8 @@ BRANCH="${BRANCH:-cursor/opengauss-backup-restore-9282}"
 BASE="https://raw.githubusercontent.com/czh0622/aa/${BRANCH}/scripts"
 FILES=(
   backup-objects.sh restore-objects.sh
-  clone-db.sh finish-clone.sh
-  install-functions.sh diagnose-oid3483.sh
+  clone-db.sh clone-db-fs.sh finish-clone.sh
+  install-functions.sh verify-functions.sh diagnose-oid3483.sh
   restore-table-data.sh backup-gsql.sh restore-gsql.sh
   backup-physical.sh common.sh
 )
