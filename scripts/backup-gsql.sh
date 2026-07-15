@@ -187,34 +187,70 @@ EOF
   fi
 done <<< "${VIEWS}"
 
-# ---------- 函数 / 过程 ----------
-if [[ "${HAS_PROKIND}" == "true" ]]; then
-  ROUTINE_SQL_QUERY="SELECT p.oid::text || '|' || p.proname || '|' || COALESCE(p.prokind::text,'f') FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='${SCHEMA_NAME}' AND p.prokind IN ('f','p') AND p.proname NOT LIKE 'pg_%' ORDER BY p.proname, p.oid;"
-else
-  # 老目录：导出非聚合函数；过程若以独立方式存在也会落在 pg_proc
-  ROUTINE_SQL_QUERY="SELECT p.oid::text || '|' || p.proname || '|' || 'f' FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='${SCHEMA_NAME}' AND NOT p.proisagg AND p.proname NOT LIKE 'pg_%' ORDER BY p.proname, p.oid;"
-fi
+# ---------- 函数 / 过程（避开 pg_get_functiondef，读 prosrc）----------
+header "${ROUT_SQL}" "functions & procedures (from pg_proc.prosrc)"
+echo "-- workaround: no pg_get_functiondef" >> "${ROUT_SQL}"
 
-ROUTINES="$(sql_t "${ROUTINE_SQL_QUERY}")"
+ROUTINES="$(sql_t "SELECT p.oid::text FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace JOIN pg_language l ON l.oid=p.prolang WHERE n.nspname='${SCHEMA_NAME}' AND l.lanname NOT IN ('internal','c') ORDER BY p.oid;")"
 echo "${ROUTINES}" > "${OUT_DIR}/routines.list"
 ROUT_COUNT=0
 [[ -n "${ROUTINES}" ]] && ROUT_COUNT="$(grep -c . "${OUT_DIR}/routines.list" || true)"
 log "函数/过程: ${ROUT_COUNT}"
 
-while IFS= read -r line; do
-  [[ -z "${line}" ]] && continue
-  OID="${line%%|*}"
-  REST="${line#*|}"
-  RNAME="${REST%%|*}"
-  RKIND="${REST##*|}"
-  log "例程(${RKIND}): ${RNAME} oid=${OID}"
-  DEF="$(sql_t "SELECT pg_get_functiondef(${OID});" || true)"
-  if [[ -n "${DEF}" ]]; then
-    echo "${DEF};" >> "${ROUT_SQL}"
-    echo >> "${ROUT_SQL}"
-  else
-    echo "-- WARN: pg_get_functiondef failed: ${RNAME} (${OID})" >> "${ROUT_SQL}"
+while IFS= read -r oid; do
+  [[ -z "${oid}" ]] && continue
+  NAME="$(sql_t "SELECT proname FROM pg_proc WHERE oid=${oid};")"
+  LANG="$(sql_t "SELECT l.lanname FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang WHERE p.oid=${oid};")"
+  RET="$(sql_t "SELECT COALESCE(quote_ident(n.nspname)||'.'||quote_ident(t.typname), quote_ident(t.typname)) FROM pg_proc p JOIN pg_type t ON t.oid=p.prorettype LEFT JOIN pg_namespace n ON n.oid=t.typnamespace WHERE p.oid=${oid};")"
+  VOL="$(sql_t "SELECT CASE provolatile WHEN 'i' THEN 'IMMUTABLE' WHEN 's' THEN 'STABLE' ELSE 'VOLATILE' END FROM pg_proc WHERE oid=${oid};")"
+  STRICT="$(sql_t "SELECT CASE WHEN proisstrict THEN 'STRICT' ELSE '' END FROM pg_proc WHERE oid=${oid};")"
+  SEC="$(sql_t "SELECT CASE WHEN prosecdef THEN 'SECURITY DEFINER' ELSE '' END FROM pg_proc WHERE oid=${oid};")"
+  RETSET="$(sql_t "SELECT CASE WHEN proretset THEN 't' ELSE 'f' END FROM pg_proc WHERE oid=${oid};")"
+  ARGTYPES="$(sql_t "SELECT trim(both FROM proargtypes::text) FROM pg_proc WHERE oid=${oid};")"
+  ARGNAMES="$(sql_t "SELECT COALESCE(array_to_string(proargnames, ','), '') FROM pg_proc WHERE oid=${oid};")"
+
+  ARG_SQL=""
+  if [[ -n "${ARGTYPES}" ]]; then
+    i=0
+    parts=()
+    IFS=',' read -r -a ANAMES <<< "${ARGNAMES}"
+    for tyoid in ${ARGTYPES}; do
+      tname="$(sql_t "SELECT COALESCE(quote_ident(n.nspname)||'.'||quote_ident(t.typname), quote_ident(t.typname)) FROM pg_type t LEFT JOIN pg_namespace n ON n.oid=t.typnamespace WHERE t.oid=${tyoid};")"
+      n="${ANAMES[$i]:-arg${i}}"
+      parts+=("\"${n}\" ${tname}")
+      i=$((i+1))
+    done
+    ARG_SQL=$(IFS=', '; echo "${parts[*]}")
   fi
+
+  SRC_B64="$(sql_t "SELECT encode(convert_to(prosrc,'UTF8'),'base64') FROM pg_proc WHERE oid=${oid};" | tr -d '\n')"
+  if [[ -z "${SRC_B64}" ]]; then
+    echo "-- SKIP ${NAME} (${oid}): empty prosrc" >> "${ROUT_SQL}"
+    log "WARN: 例程 ${oid} ${NAME} prosrc 为空"
+    continue
+  fi
+  BODY_FILE="${OUT_DIR}/prosrc_${oid}.txt"
+  echo "${SRC_B64}" | base64 -d > "${BODY_FILE}" 2>/dev/null || echo "${SRC_B64}" | base64 -D > "${BODY_FILE}"
+  {
+    echo "-- OID ${oid} ${NAME}"
+    echo "CREATE OR REPLACE FUNCTION ${SCHEMA_NAME}.\"${NAME}\"(${ARG_SQL})"
+    if [[ "${RETSET}" == "t" ]]; then
+      echo "RETURNS SETOF ${RET}"
+    else
+      echo "RETURNS ${RET}"
+    fi
+    echo "LANGUAGE ${LANG}"
+    echo "${VOL}"
+    [[ -n "${STRICT}" ]] && echo "${STRICT}"
+    [[ -n "${SEC}" ]] && echo "${SEC}"
+    echo "AS \$body\$"
+    cat "${BODY_FILE}"
+    echo
+    echo "\$body\$;"
+    echo
+  } >> "${ROUT_SQL}"
+  rm -f "${BODY_FILE}"
+  log "例程: ${NAME} (${oid})"
 done <<< "${ROUTINES}"
 
 # ---------- 表数据 ----------
