@@ -159,10 +159,14 @@ SELECT string_agg(coldef, ', ' ORDER BY attnum) FROM (
     OK_STRUCT=$((OK_STRUCT + 1))
   done < "${WORK}/tables.list"
 
-  echo "执行建表 SQL（stdin）..."
+  echo "执行建表 SQL..."
   set +e
   run_file "${DST_DB}" "${WORK}/002_tables.sql" | tee "${WORK}/002_tables.apply.log"
+  APPLY_RC=${PIPESTATUS[0]}
   set -e
+  if [[ ${APPLY_RC} -ne 0 ]]; then
+    echo "WARN: 建表 SQL 退出码=${APPLY_RC}，详见 ${WORK}/002_tables.apply.log"
+  fi
 
   DST_TABLE_N=0
   while read -r t; do

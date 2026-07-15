@@ -101,8 +101,30 @@ EOF
 done < "${OUT}/views.list"
 
 # ---------- 函数/过程：读 prosrc，避开 pg_get_functiondef ----------
-echo "SET search_path TO ${SCHEMA}, public;" > "${OUT}/004_routines.sql"
+# 生成两份：004_routines.sql（完整）与 004_routines_simple.sql（类型名简化，兼容性更好）
+echo "SET search_path TO public;" > "${OUT}/004_routines.sql"
 echo "-- built from pg_proc.prosrc (avoid pg_get_functiondef / OID 3483)" >> "${OUT}/004_routines.sql"
+cp "${OUT}/004_routines.sql" "${OUT}/004_routines_simple.sql"
+
+# 类型名简化：去掉 pg_catalog 前缀，常用别名归一
+simp_type() {
+  local t="$1"
+  t="${t#pg_catalog.}"
+  t="${t//\"/}"
+  case "${t}" in
+    character\ varying|varchar) echo "varchar" ;;
+    character|bpchar|char) echo "varchar" ;;
+    int4|integer) echo "integer" ;;
+    int8|bigint) echo "bigint" ;;
+    int2|smallint) echo "smallint" ;;
+    float8|double\ precision) echo "float8" ;;
+    float4|real) echo "float4" ;;
+    bool|boolean) echo "boolean" ;;
+    timestamptz|timestamp\ with\ time\ zone) echo "timestamptz" ;;
+    timestamp|timestamp\ without\ time\ zone) echo "timestamp" ;;
+    *) echo "${t}" ;;
+  esac
+}
 
 run -tAc "SELECT p.oid::text
           FROM pg_proc p
@@ -118,7 +140,8 @@ while read -r oid; do
   [[ -z "${oid}" ]] && continue
   NAME="$(run -tAc "SELECT proname FROM pg_proc WHERE oid=${oid};" | tr -d '\r')"
   LANG="$(run -tAc "SELECT l.lanname FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang WHERE p.oid=${oid};" | tr -d '\r')"
-  RET="$(run -tAc "SELECT COALESCE(quote_ident(n.nspname)||'.'||quote_ident(t.typname), quote_ident(t.typname)) FROM pg_proc p JOIN pg_type t ON t.oid=p.prorettype LEFT JOIN pg_namespace n ON n.oid=t.typnamespace WHERE p.oid=${oid};" | tr -d '\r')"
+  RET_RAW="$(run -tAc "SELECT CASE WHEN n.nspname IN ('pg_catalog','public') OR n.nspname IS NULL THEN t.typname ELSE n.nspname||'.'||t.typname END FROM pg_proc p JOIN pg_type t ON t.oid=p.prorettype LEFT JOIN pg_namespace n ON n.oid=t.typnamespace WHERE p.oid=${oid};" | tr -d '\r')"
+  RET="$(simp_type "${RET_RAW}")"
   VOL="$(run -tAc "SELECT CASE provolatile WHEN 'i' THEN 'IMMUTABLE' WHEN 's' THEN 'STABLE' ELSE 'VOLATILE' END FROM pg_proc WHERE oid=${oid};" | tr -d '\r')"
   STRICT="$(run -tAc "SELECT CASE WHEN proisstrict THEN 'STRICT' ELSE '' END FROM pg_proc WHERE oid=${oid};" | tr -d '\r')"
   SEC="$(run -tAc "SELECT CASE WHEN prosecdef THEN 'SECURITY DEFINER' ELSE '' END FROM pg_proc WHERE oid=${oid};" | tr -d '\r')"
@@ -130,17 +153,22 @@ while read -r oid; do
   echo "routine ${oid} ${NAME}"
 
   ARG_SQL=""
+  ARG_TYPES_ONLY=""
   if [[ -n "${ARGTYPES}" ]]; then
     i=0
     parts=()
+    type_parts=()
     IFS=',' read -r -a ANAMES <<< "${ARGNAMES}"
     for tyoid in ${ARGTYPES}; do
-      tname="$(run -tAc "SELECT COALESCE(quote_ident(n.nspname)||'.'||quote_ident(t.typname), quote_ident(t.typname)) FROM pg_type t LEFT JOIN pg_namespace n ON n.oid=t.typnamespace WHERE t.oid=${tyoid};" | tr -d '\r')"
-      n="${ANAMES[$i]:-arg${i}}"
-      parts+=("\"${n}\" ${tname}")
+      traw="$(run -tAc "SELECT CASE WHEN n.nspname IN ('pg_catalog','public') OR n.nspname IS NULL THEN t.typname ELSE n.nspname||'.'||t.typname END FROM pg_type t LEFT JOIN pg_namespace n ON n.oid=t.typnamespace WHERE t.oid=${tyoid};" | tr -d '\r')"
+      tname="$(simp_type "${traw}")"
+      n="${ANAMES[$i]:-p${i}}"
+      parts+=("${n} ${tname}")
+      type_parts+=("${tname}")
       i=$((i + 1))
     done
     ARG_SQL="$(IFS=', '; echo "${parts[*]}")"
+    ARG_TYPES_ONLY="$(IFS=', '; echo "${type_parts[*]}")"
   fi
 
   if [[ -z "${SRC_B64}" ]]; then
@@ -159,23 +187,21 @@ while read -r oid; do
   fi
 
   {
-    echo "-- OID ${oid} ${NAME} LANGUAGE ${LANG}"
-    echo "CREATE OR REPLACE FUNCTION ${SCHEMA}.\"${NAME}\"(${ARG_SQL})"
+    echo "-- OID ${oid} ${NAME}"
+    echo "DROP FUNCTION IF EXISTS ${SCHEMA}.${NAME}(${ARG_TYPES_ONLY});"
+    echo "CREATE FUNCTION ${SCHEMA}.${NAME}(${ARG_SQL})"
     if [[ "${RETSET}" == "t" ]]; then
       echo "RETURNS SETOF ${RET}"
     else
       echo "RETURNS ${RET}"
     fi
-    echo "LANGUAGE ${LANG}"
-    echo "${VOL}"
-    [[ -n "${STRICT}" ]] && echo "${STRICT}"
-    [[ -n "${SEC}" ]] && echo "${SEC}"
-    echo "AS \$body\$"
+    echo "AS \$function\$"
     cat "${BODY_FILE}"
     echo
-    echo "\$body\$;"
+    echo "\$function\$ LANGUAGE ${LANG};"
     echo
-  } >> "${OUT}/004_routines.sql"
+  } | tee -a "${OUT}/004_routines.sql" >> "${OUT}/004_routines_simple.sql"
+
   rm -f "${BODY_FILE}"
   ROUT_OK=$((ROUT_OK + 1))
 done < "${OUT}/routines.oids"
