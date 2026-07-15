@@ -62,16 +62,15 @@ run_file() {
     echo "跳过 ${label}（无文件: $(basename "${host_file}")）"
     return 0
   fi
-  local base remote
-  base="$(basename "${host_file}")"
-  remote="/tmp/restore_${base}"
-  echo "---- 还原 ${label}: ${base} -> db=${DB} ----"
-  docker cp "${host_file}" "${CONTAINER}:${remote}"
+  echo "---- 还原 ${label}: $(basename "${host_file}") -> db=${DB} ----"
   set +e
-  run_sql -d "${DB}" -f "${remote}"
+  # stdin 喂给 gsql，避免 docker cp 到 /tmp 后 omm Permission denied
+  docker exec -i -u omm \
+    -e LD_LIBRARY_PATH="${GAUSSHOME}/lib" \
+    "${CONTAINER}" \
+    "${GS_BIN}" -p 5432 -d "${DB}" -v ON_ERROR_STOP=0 -f - < "${host_file}"
   local rc=$?
   set -e
-  docker exec "${CONTAINER}" rm -f "${remote}" >/dev/null 2>&1 || true
   if [[ ${rc} -ne 0 ]]; then
     echo "WARN: ${label} 执行结束码=${rc}（请检查上方报错；常见为对象已存在可忽略）"
   else
@@ -91,7 +90,7 @@ echo "==== 还原后校验 (db=${DB}) ===="
 run_sql -d "${DB}" -c "
 SELECT 'sequences' AS kind, count(*)::text AS cnt FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='S'
 UNION ALL
-SELECT 'views', count(*)::text FROM pg_views WHERE schemaname='public'
+SELECT 'views', count(*)::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='v'
 UNION ALL
 SELECT 'routines', count(*)::text FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace JOIN pg_language l ON l.oid=p.prolang WHERE n.nspname='public' AND l.lanname NOT IN ('internal','c');
 "
