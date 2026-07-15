@@ -44,8 +44,11 @@ chmod +x scripts/*.sh
 
 | 脚本 | 作用 |
 |---|---|
-| `scripts/backup.sh` | 逻辑备份（默认 custom 格式，仅 `public` schema） |
+| `scripts/backup.sh` | 逻辑备份（`gs_dump`，默认 custom + `public`） |
+| `scripts/backup-gsql.sh` | **绕过 gs_dump**：gsql + COPY 逻辑备份 |
+| `scripts/backup-physical.sh` | **绕过 gs_dump**：停库拷贝数据目录 |
 | `scripts/restore.sh` | 从 `.dump` / `.sql` / `.sql.gz` / 目录备份还原 |
+| `scripts/restore-gsql.sh` | 还原 `backup-gsql.sh` 产物 |
 | `scripts/list-backups.sh` | 列出备份；`--ping` 探测库连通 |
 | `scripts/common.sh` | 公共配置加载与容器工具探测 |
 
@@ -255,19 +258,35 @@ docker exec monitordb bash -lc 'echo GAUSSHOME=$GAUSSHOME; ls /usr/local/opengau
 
 `gs_dump` 启动时会查询流复制状态；你当前实例该系统目录异常，导致 **gs_dump 无法使用**。请改用下面两种保底方案之一。
 
-**方案 A：gsql/COPY 逻辑备份（推荐日常，不停库）整行粘贴：**
+**方案 A：gsql/COPY 逻辑备份（推荐日常，不停库）**
+
+你已成功导出表数据后，请**再补导序列/视图/函数/过程**（整段保存为脚本执行，或用仓库 `scripts/export-objects-only.sh`）：
 
 ```bash
-TS=$(date +%Y%m%d_%H%M%S); mkdir -p ./backups/gsql_$TS; docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb /usr/local/opengauss/bin/gsql -p 5432 -d monitor -tAc "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1;" > ./backups/gsql_$TS/tables.list; while read -r t; do [ -z "$t" ] && continue; echo "dump $t"; docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb /usr/local/opengauss/bin/gsql -p 5432 -d monitor -c "COPY public.\"$t\" TO '/tmp/${t}_${TS}.copy' WITH (FORMAT text, ENCODING 'UTF8');"; docker cp monitordb:/tmp/${t}_${TS}.copy ./backups/gsql_$TS/${t}.copy; docker exec monitordb rm -f /tmp/${t}_${TS}.copy; done < ./backups/gsql_$TS/tables.list; echo OK: ./backups/gsql_$TS
+curl -fsSL -o /tmp/export-objects-only.sh https://raw.githubusercontent.com/czh0622/aa/cursor/opengauss-backup-restore-9282/scripts/export-objects-only.sh 2>/dev/null || true
 ```
 
-还原单表示例（表结构需已存在）：
+若机器不能拉 GitHub，把仓库里的 `scripts/export-objects-only.sh` 拷到服务器后：
 
 ```bash
-t=你的表名; FILE=./backups/gsql_时间戳/${t}.copy; docker cp "$FILE" monitordb:/tmp/${t}.copy; docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb /usr/local/opengauss/bin/gsql -p 5432 -d monitor -c "TRUNCATE public.\"$t\"; COPY public.\"$t\" FROM '/tmp/${t}.copy' WITH (FORMAT text, ENCODING 'UTF8');"
+chmod +x export-objects-only.sh
+./export-objects-only.sh
+# 产物在 ./backups/objects_时间戳/
 ```
 
-仓库脚本（DDL+数据打包）：`./scripts/backup-gsql.sh` / `./scripts/restore-gsql.sh`
+或直接在宿主机执行下面**对象补充导出**（不含表数据）：
+
+```bash
+bash -c 'CONTAINER=monitordb; DB=monitor; SCHEMA=public; GS=/usr/local/opengauss/bin/gsql; OUT=./backups/objects_$(date +%Y%m%d_%H%M%S); mkdir -p "$OUT"; run(){ docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib $CONTAINER $GS -p 5432 -d $DB "$@"; }; run -tAc "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='\''$SCHEMA'\'' AND c.relkind='\''S'\'' ORDER BY 1;" | sed "/^$/d" > "$OUT/sequences.list"; echo "SET search_path TO $SCHEMA, public;" > "$OUT/001_sequences.sql"; : > "$OUT/006_sequence_values.sql"; while read -r seq; do [ -z "$seq" ] && continue; echo "seq $seq"; META=$(run -tAc "SELECT increment_by||'\''|'\''||min_value||'\''|'\''||max_value||'\''|'\''||start_value||'\''|'\''||cache_value||'\''|'\''||CASE WHEN is_cycled THEN '\''CYCLE'\'' ELSE '\''NO CYCLE'\'' END||'\''|'\''||last_value||'\''|'\''||CASE WHEN is_called THEN '\''true'\'' ELSE '\''false'\'' END FROM $SCHEMA.\"$seq\";" | tr -d "\r"); IFS="|" read -r INC MINV MAXV START CACHE CYCLE LAST CALLED <<< "$META"; printf "CREATE SEQUENCE IF NOT EXISTS %s.\"%s\" INCREMENT BY %s MINVALUE %s MAXVALUE %s START WITH %s CACHE %s %s;\n" "$SCHEMA" "$seq" "$INC" "$MINV" "$MAXV" "$START" "$CACHE" "$CYCLE" >> "$OUT/001_sequences.sql"; echo "SELECT setval('\''$SCHEMA.\"$seq\"'\'', $LAST, $CALLED);" >> "$OUT/006_sequence_values.sql"; done < "$OUT/sequences.list"; run -tAc "SELECT viewname FROM pg_views WHERE schemaname='\''$SCHEMA'\'' ORDER BY 1;" | sed "/^$/d" > "$OUT/views.list"; echo "SET search_path TO $SCHEMA, public;" > "$OUT/003_views.sql"; while read -r v; do [ -z "$v" ] && continue; echo "view $v"; DEF=$(run -tAc "SELECT pg_get_viewdef('\''$SCHEMA.$v'\''::regclass, true);" | tr -d "\r"); [ -z "$DEF" ] && DEF=$(run -tAc "SELECT definition FROM pg_views WHERE schemaname='\''$SCHEMA'\'' AND viewname='\''$v'\'';" | tr -d "\r"); printf "CREATE OR REPLACE VIEW %s.\"%s\" AS\n%s;\n\n" "$SCHEMA" "$v" "$DEF" >> "$OUT/003_views.sql"; done < "$OUT/views.list"; echo "SET search_path TO $SCHEMA, public;" > "$OUT/004_routines.sql"; run -tAc "SELECT p.oid FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='\''$SCHEMA'\'' AND (NOT COALESCE(p.proisagg,false)) ORDER BY p.proname, p.oid;" | sed "/^$/d" > "$OUT/routines.oids"; while read -r oid; do [ -z "$oid" ] && continue; echo "routine $oid"; DEF=$(run -tAc "SELECT pg_get_functiondef($oid);" | tr -d "\r"); [ -n "$DEF" ] && { echo "$DEF;" >> "$OUT/004_routines.sql"; echo >> "$OUT/004_routines.sql"; }; done < "$OUT/routines.oids"; echo OK:$OUT; ls -l "$OUT"'
+```
+
+还原对象（按顺序，整行）：
+
+```bash
+OUT=./backups/objects_你的时间戳; for f in 001_sequences.sql 003_views.sql 004_routines.sql 006_sequence_values.sql; do docker cp "$OUT/$f" monitordb:/tmp/$f; docker exec -u omm -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb /usr/local/opengauss/bin/gsql -p 5432 -d monitor -f /tmp/$f; done; echo DONE
+```
+
+完整（表数据+全部对象）请用仓库脚本：`./scripts/backup-gsql.sh`（默认全量）或 `./scripts/backup-gsql.sh --objects-only`。
 
 **方案 B：物理备份（最稳，会短暂停库）整行粘贴：**
 
