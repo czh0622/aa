@@ -12,6 +12,9 @@
 
 推荐使用 **omm** 做备份/还原（权限完整）。脚本默认已按此配置。
 
+> **重要：** `gs_dump` / `gsql` 只在 **Docker 容器内**，宿主机直接执行会报 `未找到命令`。  
+> 正确方式是 `docker exec monitordb ...`，或使用本仓库 `scripts/*.sh`（已自动进容器并注入 `GAUSSHOME`）。
+
 ---
 
 ## 一、快速上手（三步）
@@ -88,7 +91,19 @@ chmod +x scripts/*.sh
 
 ## 四、不依赖脚本的 Docker 原生命令
 
-适合临时操作或排障。在**宿主机**执行：
+适合临时操作或排障。以下命令全部在**宿主机**执行，但通过 `docker exec` **进入容器**跑工具。
+
+> 错误示例（会报 `gs_dump：未找到命令`）：在宿主机直接  
+> `bash -lc "gs_dump ..."`  
+> 正确：必须带 `docker exec monitordb ...`，并用绝对路径或注入 `PATH`。
+
+### 先确认工具在容器里
+
+```bash
+docker ps --filter name=monitordb
+docker exec monitordb ls -l /usr/local/opengauss/bin/gs_dump
+docker exec monitordb /usr/local/opengauss/bin/gs_dump --help | head
+```
 
 ### 备份（custom，推荐）
 
@@ -96,8 +111,15 @@ chmod +x scripts/*.sh
 TS=$(date +%Y%m%d_%H%M%S)
 mkdir -p ./backups
 
-docker exec -e PGPASSWORD='GU1chuideng@2025' monitordb \
-  bash -lc "gs_dump -h 127.0.0.1 -p 5432 -U omm -d monitor -n public -F c -f /tmp/monitor_${TS}.dump"
+docker exec \
+  -e PGPASSWORD='GU1chuideng@2025' \
+  -e GAUSSHOME=/usr/local/opengauss \
+  -e PATH=/usr/local/opengauss/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  -e LD_LIBRARY_PATH=/usr/local/opengauss/lib \
+  monitordb \
+  /usr/local/opengauss/bin/gs_dump \
+    -h 127.0.0.1 -p 5432 -U omm -d monitor -n public -F c \
+    -f /tmp/monitor_${TS}.dump
 
 docker cp "monitordb:/tmp/monitor_${TS}.dump" "./backups/monitor_public_${TS}.dump"
 docker exec monitordb rm -f "/tmp/monitor_${TS}.dump"
@@ -110,8 +132,14 @@ echo "OK: ./backups/monitor_public_${TS}.dump"
 TS=$(date +%Y%m%d_%H%M%S)
 mkdir -p ./backups
 
-docker exec -e PGPASSWORD='GU1chuideng@2025' monitordb \
-  bash -lc "gs_dump -h 127.0.0.1 -p 5432 -U omm -d monitor -n public -F p -f /tmp/monitor_${TS}.sql"
+docker exec \
+  -e PGPASSWORD='GU1chuideng@2025' \
+  -e PATH=/usr/local/opengauss/bin:/usr/bin:/bin \
+  -e LD_LIBRARY_PATH=/usr/local/opengauss/lib \
+  monitordb \
+  /usr/local/opengauss/bin/gs_dump \
+    -h 127.0.0.1 -p 5432 -U omm -d monitor -n public -F p \
+    -f /tmp/monitor_${TS}.sql
 
 docker cp "monitordb:/tmp/monitor_${TS}.sql" "./backups/monitor_public_${TS}.sql"
 docker exec monitordb rm -f "/tmp/monitor_${TS}.sql"
@@ -125,8 +153,13 @@ FILE=./backups/monitor_public_YYYYMMDD_HHMMSS.dump   # 改成真实文件名
 NAME=$(basename "$FILE")
 
 docker cp "$FILE" "monitordb:/tmp/${NAME}"
-docker exec -e PGPASSWORD='GU1chuideng@2025' monitordb \
-  bash -lc "gs_restore -h 127.0.0.1 -p 5432 -U omm -d monitor -c /tmp/${NAME}"
+docker exec \
+  -e PGPASSWORD='GU1chuideng@2025' \
+  -e PATH=/usr/local/opengauss/bin:/usr/bin:/bin \
+  -e LD_LIBRARY_PATH=/usr/local/opengauss/lib \
+  monitordb \
+  /usr/local/opengauss/bin/gs_restore \
+    -h 127.0.0.1 -p 5432 -U omm -d monitor -c /tmp/${NAME}
 docker exec monitordb rm -f "/tmp/${NAME}"
 ```
 
@@ -134,13 +167,14 @@ docker exec monitordb rm -f "/tmp/${NAME}"
 
 ```bash
 FILE=./backups/monitor_public_YYYYMMDD_HHMMSS.sql.gz
-NAME=$(basename "${FILE%.gz}")
 
-gunzip -c "$FILE" | docker exec -i -e PGPASSWORD='GU1chuideng@2025' monitordb \
-  bash -lc "gsql -h 127.0.0.1 -p 5432 -U omm -d monitor --no-password -f -"
+gunzip -c "$FILE" | docker exec -i \
+  -e PGPASSWORD='GU1chuideng@2025' \
+  -e PATH=/usr/local/opengauss/bin:/usr/bin:/bin \
+  -e LD_LIBRARY_PATH=/usr/local/opengauss/lib \
+  monitordb \
+  /usr/local/opengauss/bin/gsql -h 127.0.0.1 -p 5432 -U omm -d monitor --no-password -f -
 ```
-
-> 若容器内没有 `gs_dump`/`gsql`，脚本会自动回退到 `pg_dump`/`psql`（部分镜像兼容层如此命名）。
 
 ---
 
@@ -176,19 +210,38 @@ crontab -e
 
 ## 七、故障排查
 
+### `gs_dump：未找到命令`
+
+几乎总是因为在**宿主机**直接执行了 `gs_dump`。工具在容器 `/usr/local/opengauss/bin/` 下。
+
 ```bash
-# 容器是否在跑
+# 1) 确认容器
 docker ps --filter name=monitordb
 
-# 容器内工具是否存在
-docker exec monitordb bash -lc 'command -v gs_dump; command -v gsql; command -v pg_dump'
+# 2) 确认二进制（应能看到文件）
+docker exec monitordb ls -l /usr/local/opengauss/bin/gs_dump
 
-# 用 omm 登录测试
-docker exec -e PGPASSWORD='GU1chuideng@2025' -it monitordb \
-  gsql -h 127.0.0.1 -p 5432 -U omm -d monitor
+# 3) 用绝对路径备份（不要省略 docker exec）
+TS=$(date +%Y%m%d_%H%M%S)
+docker exec -e PGPASSWORD='GU1chuideng@2025' -e LD_LIBRARY_PATH=/usr/local/opengauss/lib monitordb \
+  /usr/local/opengauss/bin/gs_dump -h 127.0.0.1 -p 5432 -U omm -d monitor -n public -F c -f /tmp/monitor_${TS}.dump
+```
+
+若第 2 步也没有该文件，再查安装前缀：
+
+```bash
+docker exec monitordb bash -lc 'echo GAUSSHOME=$GAUSSHOME; ls /usr/local/opengauss/bin | head; find / -name gs_dump 2>/dev/null | head'
+```
+
+### 其他检查
+
+```bash
+# 用绝对路径登录测试
+docker exec -e PGPASSWORD='GU1chuideng@2025' -e LD_LIBRARY_PATH=/usr/local/opengauss/lib -it monitordb \
+  /usr/local/opengauss/bin/gsql -h 127.0.0.1 -p 5432 -U omm -d monitor
 
 # 看最近备份
 ./scripts/list-backups.sh
 ```
 
-若 `gsql`/`gs_dump` 报认证失败：核对 `config.env` 密码；确认用的是 `omm` 而非业务用户（业务用户可能缺 dump 权限）。
+若报认证失败：核对密码；确认使用 `omm`（业务用户可能缺 dump 权限）。
