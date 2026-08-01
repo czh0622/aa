@@ -47,7 +47,8 @@
       fullscreenButton: false,
       infoBox: false,
       selectionIndicator: false,
-      imageryProvider: false,
+      // Cesium 1.104+：用 baseLayer:false 禁用默认 Ion 影像
+      baseLayer: false,
       terrainProvider: new Cesium.EllipsoidTerrainProvider(),
       orderIndependentTranslucency: false,
       contextOptions: {
@@ -57,14 +58,17 @@
       },
     });
 
-    viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString("#0b171c");
+    viewer.imageryLayers.removeAll();
+    viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString("#1c2f38");
+    viewer.scene.globe.enableLighting = false;
     viewer.scene.skyAtmosphere.show = true;
     viewer.scene.fog.enabled = true;
     viewer.scene.globe.depthTestAgainstTerrain = false;
     viewer.cesiumWidget.creditContainer.style.display = "none";
 
+    // 初始看向中国区域，便于辨认球体与后续影像
     viewer.camera.setView({
-      destination: Cesium.Cartesian3.fromDegrees(104.06, 30.67, 1_800_000),
+      destination: Cesium.Cartesian3.fromDegrees(105.0, 35.0, 9_500_000),
     });
 
     return viewer;
