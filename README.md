@@ -1,36 +1,50 @@
-# 天地图影像 · 2D / 3D 切换示例
+# 天地图影像 · 无人机虚拟飞行
 
-基于 **Cesium** 加载天地图影像底图（`img_w`）与注记（`cia_w`），并在同一场景中切换 **3D / 2D / 2.5D（哥伦布视图）**。
+基于 **Cesium** 加载天地图影像，并在三维场景中完成：
+
+- 2D / 3D / 2.5D 场景切换
+- 起飞点点选与 **海拔 ASL** 采样
+- 大疆作业风格的 **虚拟飞行**（第三人称跟拍 + HUD）
 
 ## 快速开始
-
-1. 在 [天地图控制台](https://console.tianditu.gov.cn/) 申请浏览器端 `tk`
-2. 在项目根目录启动本地静态服务：
 
 ```bash
 python3 -m http.server 8080
 ```
 
-3. 打开 `http://localhost:8080`
-4. 在页面右下角填入 Token，点击「加载影像底图」
-5. 使用 **3D / 2D / 2.5D** 按钮切换场景模式
+打开 `http://localhost:8080`，填入天地图 Token 后加载影像（也可用 `?tk=`）。
 
-也可通过 URL 传参：`http://localhost:8080/?tk=你的token`
+## 操作流程
 
-## 实现要点
+1. 点击 **加载影像底图**
+2. 保持 **3D**，点击 **设置起飞点**，在地图上点选
+3. 面板会显示经纬度和海拔 ASL
+4. 点击 **开始虚拟飞行**
 
-- 天地图提供的是 **WMTS / 瓦片影像服务**，本身不是 3D 引擎
-- 用 Cesium 承载影像图层后，通过：
-  - `viewer.scene.morphTo3D()`
-  - `viewer.scene.morphTo2D()`
-  - `viewer.scene.morphToColumbusView()`
-  完成模式切换
-- Token 会缓存在 `localStorage`（键名 `tdt_imagery_tk`）
+### 飞行操控
+
+| 按键 | 作用 |
+| --- | --- |
+| W / S | 前进 / 后退 |
+| A / D | 左移 / 右移 |
+| Q / E | 左转 / 右转 |
+| C / Z | 上升 / 下降 |
+| 鼠标拖拽 | 环顾四周 |
+
+HUD 显示相对高度 **ALT**、海拔 **ASL**、到起飞点直线距离，以及罗盘航向。
+
+## 技术说明
+
+- 影像：天地图 `img_w` + `cia_w`
+- 地形海拔：ArcGIS World Elevation（用于 `sampleHeightMostDetailed`）
+- 起飞点：黄点标记；飞行中蓝箭头机体 + 绿色视场扇面 + 黄绳连接到起飞点
+- 虚拟飞行时禁用 Cesium 默认相机，改用跟拍 `lookAt`
 
 ## 文件
 
 | 文件 | 说明 |
 | --- | --- |
-| `index.html` | 页面结构 |
+| `index.html` | 页面与飞行 HUD |
 | `styles.css` | 样式 |
-| `app.js` | Cesium 初始化、天地图加载、模式切换 |
+| `app.js` | 地图初始化、影像与面板交互 |
+| `flight.js` | 起飞点 / 海拔采样 / 虚拟飞行控制 |

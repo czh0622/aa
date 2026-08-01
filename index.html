@@ -3,11 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>天地图影像 · 2D / 3D</title>
+    <title>天地图影像 · 无人机虚拟飞行</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&family=Outfit:wght@400;500;600&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&family=Outfit:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
     <script src="https://cdn.jsdelivr.net/npm/cesium@1.120.0/Build/Cesium/Cesium.js"></script>
@@ -19,15 +19,14 @@
   </head>
   <body>
     <div id="cesiumContainer" class="map" aria-label="天地图影像地图"></div>
-
     <div class="veil" aria-hidden="true"></div>
 
-    <header class="brand">
+    <header class="brand" id="brand">
       <p class="brand__name">天地图影像</p>
-      <p class="brand__sub">在同一套影像底图上切换二维平面与三维地球</p>
+      <p class="brand__sub">三维立体视角 · 起飞点与虚拟飞行作业预演</p>
     </header>
 
-    <aside class="panel" aria-label="地图控制">
+    <aside class="panel" id="panel" aria-label="地图控制">
       <label class="field">
         <span class="field__label">天地图 Token</span>
         <input
@@ -46,9 +45,75 @@
       </div>
 
       <button type="button" id="applyToken" class="cta">加载影像底图</button>
+
+      <div class="ops">
+        <button type="button" id="pickTakeoff" class="ghost-btn">设置起飞点</button>
+        <button type="button" id="toggleFlight" class="ghost-btn" disabled>开始虚拟飞行</button>
+      </div>
+
+      <div class="meta" id="takeoffMeta">
+        <p>尚未设置起飞点。切换到 3D 后点击「设置起飞点」，再在地图上点选。</p>
+      </div>
+
       <p id="status" class="status" role="status">请先填入天地图 Token</p>
     </aside>
 
+    <!-- 虚拟飞行 HUD -->
+    <div id="flightHud" class="hud" hidden>
+      <div class="hud__tip" id="lookTip">
+        <span class="hud__tip-icon" aria-hidden="true"></span>
+        拖拽环顾四周
+      </div>
+
+      <div class="hud__keys hud__keys--move" aria-hidden="true">
+        <div class="key-row">
+          <span class="key">Q</span><span class="key">W</span><span class="key">E</span>
+        </div>
+        <div class="key-row">
+          <span class="key">A</span><span class="key">S</span><span class="key">D</span>
+        </div>
+        <p class="key-caption">平移 / 转向</p>
+      </div>
+
+      <div class="hud__keys hud__keys--alt" aria-hidden="true">
+        <div class="key-col">
+          <span class="key">C</span>
+          <span class="key">Z</span>
+        </div>
+        <p class="key-caption">升 / 降</p>
+      </div>
+
+      <div class="hud__alt">
+        <div class="alt-block">
+          <strong id="altRel">0.0</strong>
+          <span>ALT</span>
+        </div>
+        <div class="alt-block">
+          <strong id="altAsl">0.0</strong>
+          <span>ASL</span>
+        </div>
+        <div class="alt-dist" id="groundDist">0.0m</div>
+      </div>
+
+      <div class="hud__compass">
+        <div class="compass-ring" id="compassRing">
+          <span class="compass-mark" data-d="N">N</span>
+          <span class="compass-mark" data-d="E">E</span>
+          <span class="compass-mark" data-d="S">S</span>
+          <span class="compass-mark" data-d="W">W</span>
+        </div>
+        <div class="compass-needle" aria-hidden="true"></div>
+        <div class="compass-pitch" id="pitchReadout">0.0°</div>
+      </div>
+
+      <div class="hud__status">
+        <span class="pulse"></span>
+        虚拟飞行中
+        <button type="button" id="endFlight" class="hud__end">结束</button>
+      </div>
+    </div>
+
+    <script src="./flight.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>
