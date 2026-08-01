@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>天地图影像 · 2D / 3D</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&family=Outfit:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/cesium@1.120.0/Build/Cesium/Cesium.js"></script>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/cesium@1.120.0/Build/Cesium/Widgets/widgets.css"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="cesiumContainer" class="map" aria-label="天地图影像地图"></div>
+
+    <div class="veil" aria-hidden="true"></div>
+
+    <header class="brand">
+      <p class="brand__name">天地图影像</p>
+      <p class="brand__sub">在同一套影像底图上切换二维平面与三维地球</p>
+    </header>
+
+    <aside class="panel" aria-label="地图控制">
+      <label class="field">
+        <span class="field__label">天地图 Token</span>
+        <input
+          id="tdtToken"
+          class="field__input"
+          type="password"
+          autocomplete="off"
+          placeholder="在 console.tianditu.gov.cn 申请 tk"
+        />
+      </label>
+
+      <div class="modes" role="group" aria-label="场景模式">
+        <button type="button" class="mode-btn is-active" data-mode="3D">3D</button>
+        <button type="button" class="mode-btn" data-mode="2D">2D</button>
+        <button type="button" class="mode-btn" data-mode="CV">2.5D</button>
+      </div>
+
+      <button type="button" id="applyToken" class="cta">加载影像底图</button>
+      <p id="status" class="status" role="status">请先填入天地图 Token</p>
+    </aside>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
