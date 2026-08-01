@@ -164,27 +164,26 @@ window.DroneFlight = (() => {
         },
       });
 
-      // 简易前视视场锥：前进方向半透明扇面
+      // 前视视场锥：半透明绿色扇体（贴近大疆作业预览）
       entities.fov = viewer.entities.add({
         polygon: {
           hierarchy: new Cesium.CallbackProperty(() => {
             if (!state.drone) return new Cesium.PolygonHierarchy([]);
             const { lon, lat, height, heading } = state.drone;
-            const range = 180;
-            const half = Cesium.Math.toRadians(28);
-            const left = destination(lon, lat, height, heading - half, range);
-            const right = destination(lon, lat, height, heading + half, range);
-            const tip = destination(lon, lat, height - 8, heading, range * 0.15);
-            return new Cesium.PolygonHierarchy([
-              Cesium.Cartesian3.fromDegrees(lon, lat, height),
-              left,
-              tip,
-              right,
-            ]);
+            const range = 220;
+            const half = Cesium.Math.toRadians(32);
+            const steps = 8;
+            const pts = [Cesium.Cartesian3.fromDegrees(lon, lat, height)];
+            for (let i = 0; i <= steps; i += 1) {
+              const a = heading - half + ((half * 2) * i) / steps;
+              const drop = 18 + (i / steps) * 10;
+              pts.push(destination(lon, lat, height - drop, a, range));
+            }
+            return new Cesium.PolygonHierarchy(pts);
           }, false),
-          material: Cesium.Color.fromCssColorString("#5dff9a").withAlpha(0.22),
+          material: Cesium.Color.fromCssColorString("#5dff9a").withAlpha(0.28),
           outline: true,
-          outlineColor: Cesium.Color.fromCssColorString("#5dff9a").withAlpha(0.65),
+          outlineColor: Cesium.Color.fromCssColorString("#5dff9a").withAlpha(0.85),
           perPositionHeight: true,
         },
       });
@@ -260,8 +259,14 @@ window.DroneFlight = (() => {
       if (keys.has("KeyS")) forward -= 1;
       if (keys.has("KeyA")) strafe -= 1;
       if (keys.has("KeyD")) strafe += 1;
-      if (keys.has("KeyQ")) state.drone.heading -= YAW_SPEED * dt;
-      if (keys.has("KeyE")) state.drone.heading += YAW_SPEED * dt;
+      if (keys.has("KeyQ")) {
+        state.drone.heading -= YAW_SPEED * dt;
+        if (!state.dragging) state.lookH -= YAW_SPEED * dt;
+      }
+      if (keys.has("KeyE")) {
+        state.drone.heading += YAW_SPEED * dt;
+        if (!state.dragging) state.lookH += YAW_SPEED * dt;
+      }
       if (keys.has("KeyC")) state.drone.height += CLIMB_SPEED * dt;
       if (keys.has("KeyZ")) state.drone.height -= CLIMB_SPEED * dt;
 
@@ -270,12 +275,6 @@ window.DroneFlight = (() => {
       if (state.drone.height < minH) state.drone.height = minH;
 
       moveHorizontal(dt, forward, strafe);
-
-      // 机头转向时，环顾方位跟随航向，保留相对偏移感：lookH 对齐航向
-      if (!state.dragging) {
-        state.lookH = state.drone.heading;
-      }
-
       updateCamera();
       emit("telemetry", getTelemetry());
     }
